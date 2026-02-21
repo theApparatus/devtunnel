@@ -28,6 +28,7 @@ CONFIG_DIR = Path.home() / ".cloudflared"
 STATE_FILE = CONFIG_DIR / "devtunnel.json"
 TUNNEL_CONFIG = CONFIG_DIR / "config.yml"
 CF_API = "https://api.cloudflare.com/client/v4"
+SERVICE_PREFIX = "devtunnel-app"
 
 # Try to read domain/tunnel from the installed devtunnel script
 DEVTUNNEL_BIN = Path.home() / ".local" / "bin" / "devtunnel"
@@ -214,6 +215,82 @@ def get_tunnel_status():
         return "unknown"
 
 
+# ── App service management ─────────────────────────────────────────────────
+
+SYSTEMD_USER_DIR = Path.home() / ".config" / "systemd" / "user"
+
+
+def service_name(name):
+    return f"{SERVICE_PREFIX}-{name}.service"
+
+
+def get_app_service_status(name):
+    svc = service_name(name)
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", svc],
+            capture_output=True, text=True
+        )
+        if result.stdout.strip() == "active":
+            return "running"
+        result2 = subprocess.run(
+            ["systemctl", "--user", "is-enabled", svc],
+            capture_output=True, text=True
+        )
+        if result2.returncode == 0:
+            return "stopped"
+        return "none"
+    except Exception:
+        return "none"
+
+
+def create_app_service(name, directory, cmd, port):
+    SYSTEMD_USER_DIR.mkdir(parents=True, exist_ok=True)
+    svc_file = SYSTEMD_USER_DIR / service_name(name)
+    svc_file.write_text(f"""[Unit]
+Description=devtunnel app: {name} (port {port})
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={directory}
+ExecStart=/bin/bash -c '{cmd}'
+Restart=always
+RestartSec=3
+Environment=PORT={port}
+Environment=NODE_ENV=development
+
+[Install]
+WantedBy=default.target
+""")
+    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    subprocess.run(
+        ["systemctl", "--user", "enable", "--now", service_name(name)],
+        capture_output=True
+    )
+
+
+def remove_app_service(name):
+    svc = service_name(name)
+    subprocess.run(
+        ["systemctl", "--user", "disable", "--now", svc],
+        capture_output=True
+    )
+    svc_file = SYSTEMD_USER_DIR / svc
+    if svc_file.exists():
+        svc_file.unlink()
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+
+
+def control_app_service(name, action):
+    svc = service_name(name)
+    result = subprocess.run(
+        ["systemctl", "--user", action, svc],
+        capture_output=True, text=True
+    )
+    return result.returncode == 0
+
+
 # ── Routes ──────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -249,6 +326,9 @@ def api_projects():
             "emails": proj.get("emails", ""),
             "access_app_id": proj.get("access_app_id", ""),
             "url": f"https://{name}.{DOMAIN}",
+            "dir": proj.get("dir", ""),
+            "cmd": proj.get("cmd", ""),
+            "service": get_app_service_status(name),
         })
     return jsonify(projects)
 
@@ -260,6 +340,8 @@ def api_add_project():
     port = data.get("port")
     access = data.get("access", "public")
     emails = data.get("emails", "").strip()
+    directory = data.get("dir", "").strip()
+    cmd = data.get("cmd", "").strip()
 
     if not name:
         return jsonify({"error": "Name is required"}), 400
@@ -272,6 +354,9 @@ def api_add_project():
             raise ValueError
     except (TypeError, ValueError):
         return jsonify({"error": "Port must be 1-65535"}), 400
+
+    if directory and not Path(directory).is_dir():
+        return jsonify({"error": f"Directory does not exist: {directory}"}), 400
 
     state = read_state()
     if name in state.get("projects", {}):
@@ -292,10 +377,16 @@ def api_add_project():
         "access": access,
         "emails": emails,
         "access_app_id": access_app_id or "",
+        "dir": directory,
+        "cmd": cmd,
     }
     write_state(state)
     rebuild_config()
     tunnel_msg = restart_tunnel()
+
+    # Create app service if dir and cmd are provided
+    if directory and cmd:
+        create_app_service(name, directory, cmd, port)
 
     return jsonify({
         "ok": True,
@@ -316,6 +407,9 @@ def api_remove_project(name):
         if not get_cf_token() or not get_cf_account():
             return jsonify({"error": "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID needed to delete Access app"}), 400
         delete_access_app(app_id)
+
+    # Remove app service if it exists
+    remove_app_service(name)
 
     del state["projects"][name]
     write_state(state)
@@ -355,6 +449,30 @@ def api_update_emails(name):
     write_state(state)
 
     return jsonify({"ok": True})
+
+
+@app.route("/api/projects/<name>/service/<action>", methods=["POST"])
+def api_service_action(name, action):
+    if action not in ("start", "stop", "restart"):
+        return jsonify({"error": "Invalid action. Use start, stop, or restart."}), 400
+
+    state = read_state()
+    if name not in state.get("projects", {}):
+        return jsonify({"error": f"Project '{name}' not found"}), 404
+
+    proj = state["projects"][name]
+
+    # If no service exists but dir+cmd are in state, create it on first start
+    if action == "start" and get_app_service_status(name) == "none":
+        directory = proj.get("dir", "")
+        cmd = proj.get("cmd", "")
+        if directory and cmd:
+            create_app_service(name, directory, cmd, proj.get("port", 0))
+            return jsonify({"ok": True, "status": get_app_service_status(name)})
+        return jsonify({"error": "No service configured. Add --dir and --cmd to the project."}), 400
+
+    ok = control_app_service(name, action)
+    return jsonify({"ok": ok, "status": get_app_service_status(name)})
 
 
 @app.route("/api/tunnel/restart", methods=["POST"])

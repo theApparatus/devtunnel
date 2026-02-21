@@ -7,9 +7,13 @@ set -euo pipefail
 # Usage:
 #   devtunnel add <name> <port> [--public]            Add a project route
 #   devtunnel add <name> <port> --emails a@b,c@d      Lock down to specific emails (OTP)
-#   devtunnel rm <name>                                Remove a project route
+#   devtunnel add <name> <port> --dir /path --cmd "npm run dev"  Auto-manage the app process
+#   devtunnel rm <name>                                Remove a project route + service
 #   devtunnel ls                                       List active project routes
 #   devtunnel restart                                  Restart the tunnel service
+#   devtunnel restart <name>                           Restart a project's app service
+#   devtunnel stop <name>                              Stop a project's app service
+#   devtunnel logs <name>                              Tail a project's app logs
 #   devtunnel setup-otp                                Enable one-time PIN identity provider
 #   devtunnel status                                   Show tunnel service status
 #
@@ -26,6 +30,7 @@ TUNNEL_CONFIG="$CONFIG_DIR/config.yml"
 STATE_FILE="$CONFIG_DIR/devtunnel.json"
 TUNNEL_ID="your-tunnel-uuid"        # ← Set by install.sh or edit manually
 CF_API="https://api.cloudflare.com/client/v4"
+SERVICE_PREFIX="devtunnel-app"
 
 # Colors
 RED='\033[0;31m'
@@ -43,6 +48,11 @@ check_api_env() {
     [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || die "CLOUDFLARE_API_TOKEN not set. Create one at https://dash.cloudflare.com/profile/api-tokens with Access:Edit permissions."
     [[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]] || die "CLOUDFLARE_ACCOUNT_ID not set. Find it in your Cloudflare dashboard URL."
 }
+
+# Source credentials if available
+if [[ -f "$CONFIG_DIR/.env" ]]; then
+    set -a; source "$CONFIG_DIR/.env"; set +a
+fi
 
 # Initialize state file
 init_state() {
@@ -93,6 +103,68 @@ rebuild_config() {
     config+="  - service: http_status:404\n"
 
     echo -e "$config" > "$TUNNEL_CONFIG"
+}
+
+# ---- App Service Management ----
+
+service_name() {
+    echo "${SERVICE_PREFIX}-${1}.service"
+}
+
+create_app_service() {
+    local name="$1" dir="$2" cmd="$3" port="$4"
+
+    local svc_file="$HOME/.config/systemd/user/$(service_name "$name")"
+    mkdir -p "$HOME/.config/systemd/user"
+
+    cat > "$svc_file" <<SVCEOF
+[Unit]
+Description=devtunnel app: ${name} (port ${port})
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${dir}
+ExecStart=/bin/bash -c '${cmd}'
+Restart=always
+RestartSec=3
+Environment=PORT=${port}
+Environment=NODE_ENV=development
+
+[Install]
+WantedBy=default.target
+SVCEOF
+
+    systemctl --user daemon-reload
+    systemctl --user enable --now "$(service_name "$name")" 2>/dev/null
+    info "App service created and started: $(service_name "$name")"
+}
+
+remove_app_service() {
+    local name="$1"
+    local svc="$(service_name "$name")"
+    if systemctl --user is-enabled "$svc" &>/dev/null 2>&1; then
+        systemctl --user disable --now "$svc" 2>/dev/null
+        info "App service stopped and disabled"
+    fi
+    local svc_file="$HOME/.config/systemd/user/$svc"
+    if [[ -f "$svc_file" ]]; then
+        rm -f "$svc_file"
+        systemctl --user daemon-reload
+        info "App service removed"
+    fi
+}
+
+get_app_service_status() {
+    local name="$1"
+    local svc="$(service_name "$name")"
+    if systemctl --user is-active "$svc" &>/dev/null 2>&1; then
+        echo "running"
+    elif systemctl --user is-enabled "$svc" &>/dev/null 2>&1; then
+        echo "stopped"
+    else
+        echo "none"
+    fi
 }
 
 # Create a Cloudflare Access application for a hostname
@@ -173,10 +245,10 @@ delete_access_app() {
 # ---- Commands ----
 
 cmd_add() {
-    local name="" port="" access="locked" emails=""
+    local name="" port="" access="locked" emails="" dir="" cmd=""
 
     # Parse args
-    [[ $# -ge 2 ]] || die "Usage: devtunnel add <name> <port> [--public | --emails user@a.com,user@b.com]"
+    [[ $# -ge 2 ]] || die "Usage: devtunnel add <name> <port> [--public | --emails a@b] [--dir /path --cmd 'npm run dev']"
     name="$1"; port="$2"; shift 2
 
     # Validate name (subdomain safe)
@@ -188,6 +260,8 @@ cmd_add() {
         case "$1" in
             --public)  access="public"; shift ;;
             --emails)  access="locked"; emails="$2"; shift 2 ;;
+            --dir)     dir="$2"; shift 2 ;;
+            --cmd)     cmd="$2"; shift 2 ;;
             *) die "Unknown option: $1" ;;
         esac
     done
@@ -195,6 +269,11 @@ cmd_add() {
     # Check if already exists
     if [[ -n "$(get_project "$name")" ]]; then
         die "Project '${name}' already exists. Remove it first: devtunnel rm ${name}"
+    fi
+
+    # Validate dir if provided
+    if [[ -n "$dir" && ! -d "$dir" ]]; then
+        die "Directory does not exist: $dir"
     fi
 
     init_state
@@ -214,7 +293,9 @@ cmd_add() {
        --arg access "$access" \
        --arg emails "$emails" \
        --arg app_id "$access_app_id" \
-       '.projects[$name] = {port: ($port|tonumber), access: $access, emails: $emails, access_app_id: $app_id}' \
+       --arg dir "$dir" \
+       --arg cmd "$cmd" \
+       '.projects[$name] = {port: ($port|tonumber), access: $access, emails: $emails, access_app_id: $app_id, dir: $dir, cmd: $cmd}' \
        "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
 
     # Rebuild config and restart
@@ -225,6 +306,11 @@ cmd_add() {
         info "Access: ${YELLOW}PUBLIC${NC} (no auth)"
     else
         info "Access: ${GREEN}LOCKED${NC} (OTP to: ${emails})"
+    fi
+
+    # Create app service if dir and cmd provided
+    if [[ -n "$dir" && -n "$cmd" ]]; then
+        create_app_service "$name" "$dir" "$cmd" "$port"
     fi
 
     # Restart tunnel if running as service
@@ -258,6 +344,9 @@ cmd_rm() {
         delete_access_app "$app_id"
     fi
 
+    # Remove app service if it exists
+    remove_app_service "$name"
+
     # Remove from state
     jq --arg name "$name" 'del(.projects[$name])' "$STATE_FILE" > "${STATE_FILE}.tmp" \
         && mv "${STATE_FILE}.tmp" "$STATE_FILE"
@@ -287,27 +376,50 @@ cmd_ls() {
         echo "No active project tunnels."
         echo ""
         echo "Add one:  devtunnel add myproject 3000 --public"
-        echo "          devtunnel add myproject 3000 --emails friend@gmail.com"
+        echo "          devtunnel add myproject 3000 --public --dir ~/projects/myapp --cmd 'npm run dev'"
         return
     fi
 
-    printf "\n${CYAN}%-20s %-8s %-10s %-40s %s${NC}\n" "NAME" "PORT" "ACCESS" "EMAILS" "URL"
-    printf "%-20s %-8s %-10s %-40s %s\n" "----" "----" "------" "------" "---"
+    printf "\n${CYAN}%-18s %-7s %-9s %-10s %-30s %s${NC}\n" "NAME" "PORT" "ACCESS" "SERVICE" "URL" "CMD"
+    printf "%-18s %-7s %-9s %-10s %-30s %s\n" "----" "----" "------" "-------" "---" "---"
 
-    jq -r '.projects | to_entries[] | "\(.key)\t\(.value.port)\t\(.value.access)\t\(.value.emails)"' "$STATE_FILE" | \
-    while IFS=$'\t' read -r name port access emails; do
-        local access_display
+    jq -r '.projects | to_entries[] | "\(.key)\t\(.value.port)\t\(.value.access)\t\(.value.cmd // "")"' "$STATE_FILE" | \
+    while IFS=$'\t' read -r name port access cmd; do
+        local access_display svc_display
         if [[ "$access" == "public" ]]; then
             access_display="${YELLOW}public${NC}"
         else
             access_display="${GREEN}locked${NC}"
         fi
-        printf "%-20s %-8s %-10b %-40s %s\n" "$name" "$port" "$access_display" "${emails:--}" "https://${name}.${DOMAIN}"
+
+        local svc_status
+        svc_status=$(get_app_service_status "$name")
+        case "$svc_status" in
+            running) svc_display="${GREEN}running${NC}" ;;
+            stopped) svc_display="${RED}stopped${NC}" ;;
+            *)       svc_display="${YELLOW}—${NC}" ;;
+        esac
+
+        printf "%-18s %-7s %-9b %-10b %-30s %s\n" "$name" "$port" "$access_display" "$svc_display" "https://${name}.${DOMAIN}" "${cmd:--}"
     done
     echo ""
 }
 
 cmd_restart() {
+    if [[ $# -ge 1 ]]; then
+        # Restart a specific project's app service
+        local name="$1"
+        local svc="$(service_name "$name")"
+        if systemctl --user is-enabled "$svc" &>/dev/null 2>&1; then
+            systemctl --user restart "$svc"
+            info "Restarted app service for ${name}"
+        else
+            die "No app service found for '${name}'. Add one with --dir and --cmd."
+        fi
+        return
+    fi
+
+    # Restart the tunnel
     rebuild_config
     if systemctl --user is-active cloudflared.service &>/dev/null 2>&1; then
         systemctl --user restart cloudflared.service
@@ -318,6 +430,25 @@ cmd_restart() {
     else
         warn "No tunnel service found. Start manually: cloudflared tunnel run devbox"
     fi
+}
+
+cmd_stop() {
+    [[ $# -ge 1 ]] || die "Usage: devtunnel stop <name>"
+    local name="$1"
+    local svc="$(service_name "$name")"
+    if systemctl --user is-active "$svc" &>/dev/null 2>&1; then
+        systemctl --user stop "$svc"
+        info "Stopped app service for ${name}"
+    else
+        warn "App service for '${name}' is not running"
+    fi
+}
+
+cmd_logs() {
+    [[ $# -ge 1 ]] || die "Usage: devtunnel logs <name>"
+    local name="$1"
+    local svc="$(service_name "$name")"
+    journalctl --user -u "$svc" -f --no-pager
 }
 
 cmd_setup_otp() {
@@ -366,17 +497,20 @@ cmd_help() {
   USAGE:
     devtunnel add <name> <port> --public              Public, no auth
     devtunnel add <name> <port> --emails a@b,c@d      Locked, email OTP
-    devtunnel rm <name>                                Remove a project
+    devtunnel rm <name>                                Remove project + app service
     devtunnel ls                                       List projects
     devtunnel restart                                  Restart tunnel
+    devtunnel restart <name>                           Restart a project's app
+    devtunnel stop <name>                              Stop a project's app
+    devtunnel logs <name>                              Tail a project's app logs
     devtunnel status                                   Show status
     devtunnel setup-otp                                Enable email OTP (one time)
 
-  EXAMPLES:
-    devtunnel add portfolio 3000 --public
-    devtunnel add client-app 5173 --emails client@co.com,pm@co.com
-    devtunnel add api-demo 8080 --emails friend@gmail.com
-    devtunnel rm client-app
+  APP SERVICE (auto-managed process):
+    devtunnel add myapp 3000 --public --dir ~/projects/myapp --cmd "npm run dev"
+
+    --dir PATH    Working directory for the app
+    --cmd CMD     Start command (creates a systemd service that auto-restarts)
 
   MANAGEMENT:
     devtunnel web                                  Start web management UI (port 7000)
@@ -391,7 +525,6 @@ EOF
 cmd_web() {
     local port="${1:-7000}"
     local script_dir
-    # Find the web app - check repo location first, then installed location
     for dir in "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/web" \
                "$HOME/.local/share/devtunnel/web"; do
         if [[ -f "$dir/app.py" ]]; then
@@ -410,7 +543,9 @@ case "${1:-help}" in
     add)      shift; cmd_add "$@" ;;
     rm)       shift; cmd_rm "$@" ;;
     ls)       cmd_ls ;;
-    restart)  cmd_restart ;;
+    restart)  shift; cmd_restart "$@" ;;
+    stop)     shift; cmd_stop "$@" ;;
+    logs)     shift; cmd_logs "$@" ;;
     status)   cmd_status ;;
     setup-otp) cmd_setup_otp ;;
     web)      shift; cmd_web "$@" ;;

@@ -135,7 +135,7 @@
   .project-list { display: flex; flex-direction: column; gap: 6px; }
   .project-item {
     display: grid;
-    grid-template-columns: 1fr auto auto auto;
+    grid-template-columns: 1fr auto auto auto auto;
     gap: 16px;
     align-items: center;
     padding: 14px 16px;
@@ -161,6 +161,9 @@
   }
   .badge-public { background: var(--yellow-dim); color: var(--yellow); }
   .badge-locked { background: var(--green-dim); color: var(--green); }
+  .badge-running { background: var(--green-dim); color: var(--green); }
+  .badge-stopped { background: var(--red-dim); color: var(--red); }
+  .badge-none { background: var(--border); color: var(--text-muted); }
   .email-list {
     font-size: 12px;
     color: var(--text-muted);
@@ -191,6 +194,9 @@
   .btn-danger:hover { background: var(--red-dim); border-color: var(--red); }
   .btn-sm { padding: 4px 10px; font-size: 12px; }
   .btn-icon { padding: 5px 8px; font-size: 14px; line-height: 1; }
+  .btn-success { color: var(--green); }
+  .btn-success:hover { background: var(--green-dim); border-color: var(--green); }
+  .svc-controls { display: flex; gap: 4px; align-items: center; }
 
   /* ── Forms ── */
   .form-row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: flex-end; }
@@ -415,6 +421,19 @@
             <input type="text" id="f-emails" placeholder="client@company.com, friend@gmail.com">
           </div>
         </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1;">
+            <label>Working Directory (optional)</label>
+            <input type="text" id="f-dir" placeholder="~/projects/myapp">
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label>Start Command (optional)</label>
+            <input type="text" id="f-cmd" placeholder="npm run dev">
+          </div>
+        </div>
+        <div style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">
+          If both dir and command are set, a systemd service will auto-manage the process (auto-restart on crash/reboot).
+        </div>
         <div class="form-row" style="margin-top:4px;">
           <button type="submit" class="btn btn-primary">Add Project</button>
         </div>
@@ -538,7 +557,25 @@ async function loadProjects() {
       return;
     }
 
-    list.innerHTML = projects.map(p => `
+    list.innerHTML = projects.map(p => {
+      const hasSvc = p.service !== 'none';
+      const svcLabel = p.service === 'running' ? 'running' : p.service === 'stopped' ? 'stopped' : (p.dir && p.cmd ? 'ready' : 'none');
+      const svcBadge = p.service === 'running'
+        ? '<span class="badge badge-running">running</span>'
+        : p.service === 'stopped'
+          ? '<span class="badge badge-stopped">stopped</span>'
+          : (p.dir && p.cmd ? '<span class="badge badge-none">ready</span>' : '<span class="badge badge-none">no svc</span>');
+
+      const svcButtons = (p.dir && p.cmd) ? `
+        <div class="svc-controls">
+          ${p.service === 'running'
+            ? `<button class="btn btn-sm" onclick="svcAction('${p.name}','restart')" title="Restart">&#8635;</button>
+               <button class="btn btn-sm btn-danger" onclick="svcAction('${p.name}','stop')" title="Stop">&#9632;</button>`
+            : `<button class="btn btn-sm btn-success" onclick="svcAction('${p.name}','start')" title="Start">&#9654;</button>`
+          }
+        </div>` : '';
+
+      return `
       <div class="project-item">
         <div>
           <div class="project-name"><a href="${p.url}" target="_blank" rel="noopener">${p.name}</a></div>
@@ -546,16 +583,17 @@ async function loadProjects() {
             <span class="port-tag">:${p.port}</span>
             <span>&rarr;</span>
             <span>${p.url}</span>
+            ${p.cmd ? `<span style="color:var(--text-muted);">&middot; ${p.cmd}</span>` : ''}
           </div>
         </div>
+        ${svcBadge}${svcButtons}
         <span class="badge badge-${p.access}">${p.access}</span>
-        <div class="email-list" title="${(p.emails || '').replace(/"/g, '&quot;')}">${p.access === 'locked' ? (p.emails || 'no emails') : '—'}</div>
         <div class="actions">
           ${p.access === 'locked' ? `<button class="btn btn-sm" onclick="openEmailModal('${p.name}', \`${(p.emails||'').replace(/`/g,'')}\`)">Emails</button>` : ''}
           <button class="btn btn-sm btn-danger" onclick="removeProject('${p.name}')">Remove</button>
         </div>
-      </div>
-    `).join('');
+      </div>`;
+    }).join('');
   } catch(e) {
     toast('Failed to load projects: ' + e.message, 'error');
   }
@@ -581,6 +619,8 @@ async function addProject(e) {
   const port = document.getElementById('f-port').value;
   const access = document.getElementById('f-access').value;
   const emails = document.getElementById('f-emails').value.trim();
+  const dir = document.getElementById('f-dir').value.trim();
+  const cmd = document.getElementById('f-cmd').value.trim();
 
   const btn = e.target.querySelector('button[type=submit]');
   btn.textContent = 'Adding...';
@@ -589,7 +629,7 @@ async function addProject(e) {
   try {
     const result = await api('/api/projects', {
       method: 'POST',
-      body: { name, port, access, emails },
+      body: { name, port, access, emails, dir, cmd },
     });
     toast(`Added ${name}.{{ domain }}`);
     document.getElementById('add-form').reset();
@@ -657,6 +697,18 @@ async function saveEmails() {
     });
     toast(`Updated emails for ${currentEditProject}`);
     closeModal();
+    loadProjects();
+  } catch(e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ── Service control ──
+
+async function svcAction(name, action) {
+  try {
+    const result = await api(`/api/projects/${name}/service/${action}`, { method: 'POST' });
+    toast(`${action === 'start' ? 'Started' : action === 'stop' ? 'Stopped' : 'Restarted'} ${name}`);
     loadProjects();
   } catch(e) {
     toast(e.message, 'error');

@@ -153,14 +153,24 @@ devtunnel add portfolio 3000 --public
 # Locked project — only these emails get in via OTP
 devtunnel add client-app 5173 --emails client@company.com,pm@company.com
 
-# Multiple emails
-devtunnel add prototype 8080 --emails alice@gmail.com,bob@work.com,carol@dev.io
+# Auto-managed app process (creates a systemd service that auto-restarts on crash/reboot)
+devtunnel add myapp 3000 --public --dir ~/projects/myapp --cmd "npm run dev"
 
-# List all projects
+# Locked + auto-managed
+devtunnel add client-app 5173 --emails client@acme.com --dir ~/projects/client --cmd "npm run dev"
+
+# List all projects (shows service status)
 devtunnel ls
 
-# Remove a project (also deletes the Access app if locked)
+# Remove a project (also stops the app service and deletes the Access app)
 devtunnel rm client-app
+
+# Restart / stop a project's app service
+devtunnel restart myapp
+devtunnel stop myapp
+
+# Tail a project's logs
+devtunnel logs myapp
 
 # Restart the tunnel (after manual config changes)
 devtunnel restart
@@ -172,15 +182,16 @@ devtunnel status
 ### Example workflow
 
 ```bash
-# Start working on a client project
-cd ~/projects/acme-dashboard
-npm run dev -- --port 5173
+# Share a project with a client — auto-starts and auto-restarts the dev server
+devtunnel add acme 5173 --emails client@acme.com --dir ~/projects/acme-dashboard --cmd "npm run dev"
 
-# Share with the client
-devtunnel add acme 5173 --emails client@acme.com
-
-# Send them the link: https://acme.fixshifted.com
+# Send them the link: https://acme.yourdomain.com
 # They get an email OTP login, 24h session
+# The dev server stays running even after reboot
+
+# Check on it
+devtunnel ls
+devtunnel logs acme
 
 # Done for the day? Leave it up or tear it down
 devtunnel rm acme
@@ -192,11 +203,16 @@ devtunnel rm acme
 |---|---|
 | `devtunnel add <name> <port> --public` | Add a public project |
 | `devtunnel add <name> <port> --emails a@b,c@d` | Add a locked project |
-| `devtunnel rm <name>` | Remove a project and its Access app |
-| `devtunnel ls` | List all active projects |
+| `devtunnel add ... --dir PATH --cmd CMD` | Also create an auto-managed app service |
+| `devtunnel rm <name>` | Remove a project, its service, and Access app |
+| `devtunnel ls` | List all active projects with service status |
 | `devtunnel restart` | Restart the tunnel service |
+| `devtunnel restart <name>` | Restart a project's app service |
+| `devtunnel stop <name>` | Stop a project's app service |
+| `devtunnel logs <name>` | Tail a project's app logs |
 | `devtunnel status` | Show tunnel and project status |
 | `devtunnel setup-otp` | Enable email OTP (one-time setup) |
+| `devtunnel web` | Start the web management UI (port 7000) |
 | `devtunnel help` | Show help |
 
 ## File Locations
@@ -204,21 +220,26 @@ devtunnel rm acme
 | File | Purpose |
 |---|---|
 | `~/.local/bin/devtunnel` | The CLI script |
+| `~/.local/share/devtunnel/web/` | Web management UI (Flask) |
 | `~/.cloudflared/config.yml` | Cloudflare Tunnel ingress config (auto-managed) |
-| `~/.cloudflared/devtunnel.json` | Project state (ports, access type, Access app IDs) |
+| `~/.cloudflared/devtunnel.json` | Project state (ports, access, dir, cmd, Access app IDs) |
+| `~/.cloudflared/.env` | Cloudflare API credentials |
 | `~/.cloudflared/cert.pem` | Tunnel auth certificate |
 | `~/.cloudflared/<tunnel-id>.json` | Tunnel credentials |
-| `~/.config/systemd/user/cloudflared.service` | Systemd user service |
+| `~/.config/systemd/user/cloudflared.service` | Tunnel systemd service |
+| `~/.config/systemd/user/devtunnel-web.service` | Web UI systemd service |
+| `~/.config/systemd/user/devtunnel-app-*.service` | Auto-created app services |
 
 ## Architecture
 
 ```
-devtunnel add myapp 3000 --emails user@co.com
+devtunnel add myapp 3000 --emails user@co.com --dir ~/proj --cmd "npm run dev"
     │
     ├─ Updates ~/.cloudflared/devtunnel.json (state)
     ├─ Rebuilds ~/.cloudflared/config.yml (ingress rules)
-    ├─ Creates Cloudflare Access Application via API
+    ├─ Creates Cloudflare Access Application via API (if --emails)
     ├─ Creates Access Policy (allow listed emails)
+    ├─ Creates systemd user service devtunnel-app-myapp.service (if --dir/--cmd)
     └─ Restarts cloudflared systemd service
 ```
 
