@@ -1,0 +1,399 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+#
+# devtunnel - manage cloudflare tunnel routes + zero trust access for dev projects
+#
+# Usage:
+#   devtunnel add <name> <port> [--public]            Add a project route
+#   devtunnel add <name> <port> --emails a@b,c@d      Lock down to specific emails (OTP)
+#   devtunnel rm <name>                                Remove a project route
+#   devtunnel ls                                       List active project routes
+#   devtunnel restart                                  Restart the tunnel service
+#   devtunnel setup-otp                                Enable one-time PIN identity provider
+#   devtunnel status                                   Show tunnel service status
+#
+# Requires:
+#   CLOUDFLARE_API_TOKEN  - API token with Access:Edit + DNS:Edit
+#   CLOUDFLARE_ACCOUNT_ID - Your Cloudflare account ID
+#
+# Config stored in: ~/.cloudflared/devtunnel.json
+#
+
+DOMAIN="yourdomain.com"            # ← Set by install.sh or edit manually
+CONFIG_DIR="$HOME/.cloudflared"
+TUNNEL_CONFIG="$CONFIG_DIR/config.yml"
+STATE_FILE="$CONFIG_DIR/devtunnel.json"
+TUNNEL_ID="your-tunnel-uuid"        # ← Set by install.sh or edit manually
+CF_API="https://api.cloudflare.com/client/v4"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+die() { echo -e "${RED}error:${NC} $*" >&2; exit 1; }
+info() { echo -e "${GREEN}>>>${NC} $*"; }
+warn() { echo -e "${YELLOW}>>>${NC} $*"; }
+
+# Check required env vars for API operations
+check_api_env() {
+    [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || die "CLOUDFLARE_API_TOKEN not set. Create one at https://dash.cloudflare.com/profile/api-tokens with Access:Edit permissions."
+    [[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]] || die "CLOUDFLARE_ACCOUNT_ID not set. Find it in your Cloudflare dashboard URL."
+}
+
+# Initialize state file
+init_state() {
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo '{"projects":{}}' > "$STATE_FILE"
+    fi
+}
+
+# Read state
+get_projects() {
+    jq -r '.projects' "$STATE_FILE"
+}
+
+get_project() {
+    jq -r ".projects[\"$1\"] // empty" "$STATE_FILE"
+}
+
+# CF API helper
+cf_api() {
+    local method="$1" path="$2"
+    shift 2
+    curl -s -X "$method" \
+        "${CF_API}${path}" \
+        -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        "$@"
+}
+
+# Rebuild the cloudflared config.yml from state
+rebuild_config() {
+    local config=""
+    config+="tunnel: ${TUNNEL_ID}\n"
+    config+="credentials-file: ${CONFIG_DIR}/${TUNNEL_ID}.json\n"
+    config+="\n"
+    config+="ingress:\n"
+
+    # Add each project route
+    local names
+    names=$(jq -r '.projects | keys[]' "$STATE_FILE" 2>/dev/null || true)
+    for name in $names; do
+        local port
+        port=$(jq -r ".projects[\"$name\"].port" "$STATE_FILE")
+        config+="  - hostname: \"${name}.${DOMAIN}\"\n"
+        config+="    service: http://localhost:${port}\n"
+    done
+
+    # Catch-all
+    config+="  - service: http_status:404\n"
+
+    echo -e "$config" > "$TUNNEL_CONFIG"
+}
+
+# Create a Cloudflare Access application for a hostname
+create_access_app() {
+    local name="$1" emails="$2"
+    local hostname="${name}.${DOMAIN}"
+
+    info "Creating Access application for ${hostname}..."
+    local app_result
+    app_result=$(cf_api POST "/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps" \
+        -d "{
+            \"name\": \"devbox-${name}\",
+            \"domain\": \"${hostname}\",
+            \"type\": \"self_hosted\",
+            \"session_duration\": \"24h\",
+            \"self_hosted_domains\": [\"${hostname}\"],
+            \"app_launcher_visible\": true,
+            \"skip_interstitial\": true
+        }")
+
+    local app_id
+    app_id=$(echo "$app_result" | jq -r '.result.id // empty')
+    if [[ -z "$app_id" ]]; then
+        local err
+        err=$(echo "$app_result" | jq -r '.errors[0].message // "unknown error"')
+        die "Failed to create Access app: $err"
+    fi
+
+    info "Access app created: ${app_id}"
+
+    # Build include rules from email list
+    local include_rules="["
+    local first=true
+    IFS=',' read -ra email_arr <<< "$emails"
+    for email in "${email_arr[@]}"; do
+        email=$(echo "$email" | xargs) # trim whitespace
+        if [[ "$first" == true ]]; then
+            first=false
+        else
+            include_rules+=","
+        fi
+        include_rules+="{\"email\":{\"email\":\"${email}\"}}"
+    done
+    include_rules+="]"
+
+    info "Creating Access policy for emails: ${emails}..."
+    local policy_result
+    policy_result=$(cf_api POST "/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps/${app_id}/policies" \
+        -d "{
+            \"name\": \"Allow invited emails\",
+            \"decision\": \"allow\",
+            \"precedence\": 1,
+            \"include\": ${include_rules},
+            \"require\": [],
+            \"exclude\": []
+        }")
+
+    local policy_id
+    policy_id=$(echo "$policy_result" | jq -r '.result.id // empty')
+    if [[ -z "$policy_id" ]]; then
+        local err
+        err=$(echo "$policy_result" | jq -r '.errors[0].message // "unknown error"')
+        warn "Failed to create policy: $err"
+    else
+        info "Access policy created: ${policy_id}"
+    fi
+
+    echo "$app_id"
+}
+
+# Delete a Cloudflare Access application
+delete_access_app() {
+    local app_id="$1"
+    info "Deleting Access application ${app_id}..."
+    cf_api DELETE "/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps/${app_id}" > /dev/null
+}
+
+# ---- Commands ----
+
+cmd_add() {
+    local name="" port="" access="locked" emails=""
+
+    # Parse args
+    [[ $# -ge 2 ]] || die "Usage: devtunnel add <name> <port> [--public | --emails user@a.com,user@b.com]"
+    name="$1"; port="$2"; shift 2
+
+    # Validate name (subdomain safe)
+    [[ "$name" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || die "Name must be a valid subdomain (lowercase alphanumeric and hyphens)"
+    # Validate port
+    [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || die "Port must be 1-65535"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --public)  access="public"; shift ;;
+            --emails)  access="locked"; emails="$2"; shift 2 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+
+    # Check if already exists
+    if [[ -n "$(get_project "$name")" ]]; then
+        die "Project '${name}' already exists. Remove it first: devtunnel rm ${name}"
+    fi
+
+    init_state
+
+    local access_app_id=""
+    if [[ "$access" == "locked" ]]; then
+        if [[ -z "$emails" ]]; then
+            die "Locked access requires --emails. Use --public for no auth, or --emails user@a.com,user@b.com"
+        fi
+        check_api_env
+        access_app_id=$(create_access_app "$name" "$emails")
+    fi
+
+    # Update state
+    jq --arg name "$name" \
+       --arg port "$port" \
+       --arg access "$access" \
+       --arg emails "$emails" \
+       --arg app_id "$access_app_id" \
+       '.projects[$name] = {port: ($port|tonumber), access: $access, emails: $emails, access_app_id: $app_id}' \
+       "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+
+    # Rebuild config and restart
+    rebuild_config
+
+    info "Added ${CYAN}${name}.${DOMAIN}${NC} -> localhost:${port}"
+    if [[ "$access" == "public" ]]; then
+        info "Access: ${YELLOW}PUBLIC${NC} (no auth)"
+    else
+        info "Access: ${GREEN}LOCKED${NC} (OTP to: ${emails})"
+    fi
+
+    # Restart tunnel if running as service
+    if systemctl --user is-active cloudflared.service &>/dev/null 2>&1; then
+        systemctl --user restart cloudflared.service
+        info "Tunnel service restarted"
+    elif systemctl is-active cloudflared.service &>/dev/null 2>&1; then
+        warn "Restart the tunnel: sudo systemctl restart cloudflared"
+    else
+        warn "Start the tunnel: cloudflared tunnel run devbox"
+    fi
+
+    echo ""
+    info "URL: https://${name}.${DOMAIN}"
+}
+
+cmd_rm() {
+    [[ $# -ge 1 ]] || die "Usage: devtunnel rm <name>"
+    local name="$1"
+
+    init_state
+    local project
+    project=$(get_project "$name")
+    [[ -n "$project" ]] || die "Project '${name}' not found"
+
+    # Delete Access app if it exists
+    local app_id
+    app_id=$(echo "$project" | jq -r '.access_app_id // empty')
+    if [[ -n "$app_id" ]]; then
+        check_api_env
+        delete_access_app "$app_id"
+    fi
+
+    # Remove from state
+    jq --arg name "$name" 'del(.projects[$name])' "$STATE_FILE" > "${STATE_FILE}.tmp" \
+        && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+
+    rebuild_config
+
+    info "Removed ${name}.${DOMAIN}"
+
+    # Restart tunnel if running as service
+    if systemctl --user is-active cloudflared.service &>/dev/null 2>&1; then
+        systemctl --user restart cloudflared.service
+        info "Tunnel service restarted"
+    elif systemctl is-active cloudflared.service &>/dev/null 2>&1; then
+        warn "Restart the tunnel: sudo systemctl restart cloudflared"
+    else
+        warn "Restart the tunnel to apply changes"
+    fi
+}
+
+cmd_ls() {
+    init_state
+
+    local count
+    count=$(jq '.projects | length' "$STATE_FILE")
+
+    if [[ "$count" -eq 0 ]]; then
+        echo "No active project tunnels."
+        echo ""
+        echo "Add one:  devtunnel add myproject 3000 --public"
+        echo "          devtunnel add myproject 3000 --emails friend@gmail.com"
+        return
+    fi
+
+    printf "\n${CYAN}%-20s %-8s %-10s %-40s %s${NC}\n" "NAME" "PORT" "ACCESS" "EMAILS" "URL"
+    printf "%-20s %-8s %-10s %-40s %s\n" "----" "----" "------" "------" "---"
+
+    jq -r '.projects | to_entries[] | "\(.key)\t\(.value.port)\t\(.value.access)\t\(.value.emails)"' "$STATE_FILE" | \
+    while IFS=$'\t' read -r name port access emails; do
+        local access_display
+        if [[ "$access" == "public" ]]; then
+            access_display="${YELLOW}public${NC}"
+        else
+            access_display="${GREEN}locked${NC}"
+        fi
+        printf "%-20s %-8s %-10b %-40s %s\n" "$name" "$port" "$access_display" "${emails:--}" "https://${name}.${DOMAIN}"
+    done
+    echo ""
+}
+
+cmd_restart() {
+    rebuild_config
+    if systemctl --user is-active cloudflared.service &>/dev/null 2>&1; then
+        systemctl --user restart cloudflared.service
+        info "Tunnel service restarted (user)"
+    elif systemctl is-active cloudflared.service &>/dev/null 2>&1; then
+        sudo systemctl restart cloudflared
+        info "Tunnel service restarted (system)"
+    else
+        warn "No tunnel service found. Start manually: cloudflared tunnel run devbox"
+    fi
+}
+
+cmd_setup_otp() {
+    check_api_env
+    info "Enabling One-Time PIN identity provider..."
+    local result
+    result=$(cf_api POST "/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/identity_providers" \
+        -d '{"name": "One-Time PIN", "type": "onetimepin", "config": {}}')
+
+    local success
+    success=$(echo "$result" | jq -r '.success')
+    if [[ "$success" == "true" ]]; then
+        info "One-Time PIN enabled! Users will receive a code via email."
+    else
+        local err
+        err=$(echo "$result" | jq -r '.errors[0].message // "unknown"')
+        if [[ "$err" == *"already exists"* ]] || [[ "$err" == *"duplicate"* ]]; then
+            info "One-Time PIN is already enabled."
+        else
+            warn "Response: $err (may already be enabled)"
+        fi
+    fi
+}
+
+cmd_status() {
+    echo ""
+    if systemctl --user is-active cloudflared.service &>/dev/null 2>&1; then
+        info "Tunnel service: ${GREEN}running${NC} (user)"
+    elif systemctl is-active cloudflared.service &>/dev/null 2>&1; then
+        info "Tunnel service: ${GREEN}running${NC} (system)"
+    else
+        warn "Tunnel service: ${RED}not running${NC}"
+    fi
+
+    echo ""
+    cloudflared tunnel info devbox 2>/dev/null || true
+    echo ""
+    cmd_ls
+}
+
+cmd_help() {
+    cat <<'EOF'
+
+  devtunnel - expose local dev projects via Cloudflare Tunnel
+
+  USAGE:
+    devtunnel add <name> <port> --public              Public, no auth
+    devtunnel add <name> <port> --emails a@b,c@d      Locked, email OTP
+    devtunnel rm <name>                                Remove a project
+    devtunnel ls                                       List projects
+    devtunnel restart                                  Restart tunnel
+    devtunnel status                                   Show status
+    devtunnel setup-otp                                Enable email OTP (one time)
+
+  EXAMPLES:
+    devtunnel add portfolio 3000 --public
+    devtunnel add client-app 5173 --emails client@co.com,pm@co.com
+    devtunnel add api-demo 8080 --emails friend@gmail.com
+    devtunnel rm client-app
+
+  ENVIRONMENT:
+    CLOUDFLARE_API_TOKEN    Required for locked (non-public) projects
+    CLOUDFLARE_ACCOUNT_ID   Required for locked (non-public) projects
+
+EOF
+}
+
+# ---- Main ----
+
+case "${1:-help}" in
+    add)      shift; cmd_add "$@" ;;
+    rm)       shift; cmd_rm "$@" ;;
+    ls)       cmd_ls ;;
+    restart)  cmd_restart ;;
+    status)   cmd_status ;;
+    setup-otp) cmd_setup_otp ;;
+    help|-h|--help) cmd_help ;;
+    *) die "Unknown command: $1. Run 'devtunnel help' for usage." ;;
+esac

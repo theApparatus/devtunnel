@@ -1,0 +1,14 @@
+[Unit]
+Description=Cloudflare Tunnel (devbox)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/cloudflared tunnel --config %h/.cloudflared/config.yml run devbox
+Restart=on-failure
+RestartSec=5
+Environment=NO_AUTOUPDATE=true
+
+[Install]
+WantedBy=default.target
