@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>devtunnel</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+
+  /* Header */
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+  header h1 { font-size: 22px; font-weight: 600; }
+  header h1 span { color: var(--text-muted); font-weight: 400; }
+  .status-bar { display: flex; gap: 16px; align-items: center; font-size: 13px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+  .status-dot.green { background: var(--green); }
+  .status-dot.red { background: var(--red); }
+  .status-dot.yellow { background: var(--yellow); }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .card h2 { font-size: 15px; font-weight: 600; margin-bottom: 16px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+
+  /* Project list */
+  .project-list { display: flex; flex-direction: column; gap: 8px; }
+  .project-item {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 16px;
+    background: var(--bg);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+  .project-info { min-width: 0; }
+  .project-name { font-weight: 600; font-size: 15px; }
+  .project-name a { color: var(--accent); text-decoration: none; }
+  .project-name a:hover { text-decoration: underline; }
+  .project-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .badge-public { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+  .badge-locked { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+  .email-list { font-size: 12px; color: var(--text-muted); max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .actions { display: flex; gap: 6px; }
+
+  /* Buttons */
+  .btn {
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .btn:hover { border-color: var(--text-muted); }
+  .btn-primary { background: rgba(88, 166, 255, 0.15); border-color: var(--accent); color: var(--accent); }
+  .btn-primary:hover { background: rgba(88, 166, 255, 0.25); }
+  .btn-danger { color: var(--red); }
+  .btn-danger:hover { background: rgba(248, 81, 73, 0.1); border-color: var(--red); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+  /* Forms */
+  .form-row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  .form-group { display: flex; flex-direction: column; gap: 4px; }
+  .form-group label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+  .form-group input, .form-group select {
+    padding: 8px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+  }
+  .form-group input:focus, .form-group select:focus { border-color: var(--accent); }
+  .form-group input::placeholder { color: var(--text-muted); }
+
+  /* Toast */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity 0.3s, transform 0.3s;
+    z-index: 1000;
+    max-width: 400px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: rgba(63, 185, 80, 0.15); border: 1px solid var(--green); color: var(--green); }
+  .toast.error { background: rgba(248, 81, 73, 0.15); border: 1px solid var(--red); color: var(--red); }
+
+  /* Modal */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 100;
+    justify-content: center;
+    align-items: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    width: 440px;
+    max-width: 90vw;
+  }
+  .modal h3 { font-size: 16px; margin-bottom: 16px; }
+  .modal .form-group { margin-bottom: 12px; }
+  .modal .form-group input, .modal .form-group textarea {
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+    font-family: inherit;
+  }
+  .modal .form-group textarea { resize: vertical; min-height: 60px; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+  /* Empty state */
+  .empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-muted);
+  }
+  .empty-state p { margin-bottom: 16px; }
+
+  /* Env warning */
+  .env-warning {
+    background: rgba(210, 153, 34, 0.1);
+    border: 1px solid var(--yellow);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    color: var(--yellow);
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>devtunnel <span>/ {{ domain }}</span></h1>
+    <div class="status-bar">
+      <span id="tunnel-status"><span class="status-dot yellow"></span> checking...</span>
+      <button class="btn btn-sm" onclick="restartTunnel()">Restart Tunnel</button>
+    </div>
+  </header>
+
+  <div id="env-warning" class="env-warning" style="display:none;">
+    Cloudflare API credentials not configured. Locked projects (email OTP) won't work.<br>
+    Set <code>CLOUDFLARE_API_TOKEN</code> and <code>CLOUDFLARE_ACCOUNT_ID</code> environment variables.
+  </div>
+
+  <!-- Add Project -->
+  <div class="card">
+    <h2>Add Project</h2>
+    <form id="add-form" onsubmit="addProject(event)">
+      <div class="form-row">
+        <div class="form-group" style="flex:1;">
+          <label>Subdomain</label>
+          <input type="text" id="f-name" placeholder="myproject" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" required>
+        </div>
+        <div class="form-group" style="width:100px;">
+          <label>Port</label>
+          <input type="number" id="f-port" placeholder="3000" min="1" max="65535" required>
+        </div>
+        <div class="form-group" style="width:120px;">
+          <label>Access</label>
+          <select id="f-access" onchange="toggleEmails()">
+            <option value="public">Public</option>
+            <option value="locked">Locked</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row" id="emails-row" style="display:none;">
+        <div class="form-group" style="flex:1;">
+          <label>Allowed Emails (comma-separated)</label>
+          <input type="text" id="f-emails" placeholder="client@company.com, friend@gmail.com">
+        </div>
+      </div>
+      <div class="form-row">
+        <button type="submit" class="btn btn-primary">Add Project</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Project List -->
+  <div class="card">
+    <h2>Active Projects</h2>
+    <div id="project-list">
+      <div class="empty-state">
+        <p>No projects yet. Add one above to get started.</p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Edit Emails Modal -->
+<div class="modal-overlay" id="email-modal">
+  <div class="modal">
+    <h3>Edit Allowed Emails</h3>
+    <p style="font-size:13px; color:var(--text-muted); margin-bottom:12px;">
+      Project: <strong id="modal-project-name"></strong>
+    </p>
+    <div class="form-group">
+      <label>Emails (comma-separated)</label>
+      <textarea id="modal-emails" placeholder="client@company.com, friend@gmail.com"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEmails()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';
+
+function toast(msg, type = 'success') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `toast ${type} show`;
+  setTimeout(() => el.classList.remove('show'), 3500);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+// ── Status ──
+
+async function loadStatus() {
+  try {
+    const s = await api('/api/status');
+    const el = document.getElementById('tunnel-status');
+    if (s.tunnel === 'running') {
+      el.innerHTML = '<span class="status-dot green"></span> Tunnel running';
+    } else {
+      el.innerHTML = '<span class="status-dot red"></span> Tunnel stopped';
+    }
+    if (!s.has_api_token || !s.has_account_id) {
+      document.getElementById('env-warning').style.display = 'block';
+    }
+  } catch(e) {
+    document.getElementById('tunnel-status').innerHTML =
+      '<span class="status-dot red"></span> Error';
+  }
+}
+
+// ── Projects ──
+
+async function loadProjects() {
+  try {
+    const projects = await api('/api/projects');
+    const list = document.getElementById('project-list');
+
+    if (projects.length === 0) {
+      list.innerHTML = '<div class="empty-state"><p>No projects yet. Add one above to get started.</p></div>';
+      return;
+    }
+
+    list.innerHTML = projects.map(p => `
+      <div class="project-item">
+        <div class="project-info">
+          <div class="project-name"><a href="${p.url}" target="_blank">${p.name}</a></div>
+          <div class="project-meta">localhost:${p.port} &rarr; ${p.url}</div>
+        </div>
+        <span class="badge badge-${p.access}">${p.access}</span>
+        <div class="email-list" title="${p.emails || ''}">${p.access === 'locked' ? (p.emails || 'no emails') : '—'}</div>
+        <div class="actions">
+          ${p.access === 'locked' ? `<button class="btn btn-sm" onclick="openEmailModal('${p.name}', '${p.emails.replace(/'/g, "\\'")}')">Edit Emails</button>` : ''}
+          <button class="btn btn-sm btn-danger" onclick="removeProject('${p.name}')">Remove</button>
+        </div>
+      </div>
+    `).join('');
+  } catch(e) {
+    toast('Failed to load projects: ' + e.message, 'error');
+  }
+}
+
+// ── Add project ──
+
+async function addProject(e) {
+  e.preventDefault();
+  const name = document.getElementById('f-name').value.trim().toLowerCase();
+  const port = document.getElementById('f-port').value;
+  const access = document.getElementById('f-access').value;
+  const emails = document.getElementById('f-emails').value.trim();
+
+  try {
+    const result = await api('/api/projects', {
+      method: 'POST',
+      body: { name, port, access, emails },
+    });
+    toast(`Added ${name}.{{ domain }}`);
+    document.getElementById('add-form').reset();
+    document.getElementById('emails-row').style.display = 'none';
+    loadProjects();
+  } catch(e) {
+    toast(e.message, 'error');
+  }
+}
+
+function toggleEmails() {
+  const access = document.getElementById('f-access').value;
+  document.getElementById('emails-row').style.display = access === 'locked' ? 'flex' : 'none';
+}
+
+// ── Remove project ──
+
+async function removeProject(name) {
+  if (!confirm(`Remove project "${name}"? This will delete the Access app if one exists.`)) return;
+  try {
+    await api(`/api/projects/${name}`, { method: 'DELETE' });
+    toast(`Removed ${name}`);
+    loadProjects();
+  } catch(e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ── Edit emails modal ──
+
+let currentEditProject = '';
+
+function openEmailModal(name, emails) {
+  currentEditProject = name;
+  document.getElementById('modal-project-name').textContent = name;
+  document.getElementById('modal-emails').value = emails;
+  document.getElementById('email-modal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('email-modal').classList.remove('open');
+  currentEditProject = '';
+}
+
+async function saveEmails() {
+  const emails = document.getElementById('modal-emails').value.trim();
+  try {
+    await api(`/api/projects/${currentEditProject}/emails`, {
+      method: 'PUT',
+      body: { emails },
+    });
+    toast(`Updated emails for ${currentEditProject}`);
+    closeModal();
+    loadProjects();
+  } catch(e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ── Restart tunnel ──
+
+async function restartTunnel() {
+  try {
+    const result = await api('/api/tunnel/restart', { method: 'POST' });
+    toast(result.message || 'Tunnel restarted');
+    setTimeout(loadStatus, 2000);
+  } catch(e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ── Escape key closes modal ──
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModal();
+});
+
+// ── Init ──
+loadStatus();
+loadProjects();
+// Refresh status every 30s
+setInterval(loadStatus, 30000);
+</script>
+</body>
+</html>

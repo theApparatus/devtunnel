@@ -1,0 +1,13 @@
+[Unit]
+Description=devtunnel Web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/devtunnel web
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

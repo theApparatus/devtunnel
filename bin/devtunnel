@@ -378,11 +378,30 @@ cmd_help() {
     devtunnel add api-demo 8080 --emails friend@gmail.com
     devtunnel rm client-app
 
+  MANAGEMENT:
+    devtunnel web                                  Start web management UI (port 7000)
+
   ENVIRONMENT:
     CLOUDFLARE_API_TOKEN    Required for locked (non-public) projects
     CLOUDFLARE_ACCOUNT_ID   Required for locked (non-public) projects
 
 EOF
+}
+
+cmd_web() {
+    local port="${1:-7000}"
+    local script_dir
+    # Find the web app - check repo location first, then installed location
+    for dir in "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/web" \
+               "$HOME/.local/share/devtunnel/web"; do
+        if [[ -f "$dir/app.py" ]]; then
+            info "Starting web UI on http://127.0.0.1:${port}"
+            export DEVTUNNEL_DOMAIN="$DOMAIN"
+            export DEVTUNNEL_TUNNEL_ID="$TUNNEL_ID"
+            exec python3 "$dir/app.py"
+        fi
+    done
+    die "Web UI not found. Install it to ~/.local/share/devtunnel/web/"
 }
 
 # ---- Main ----
@@ -394,6 +413,7 @@ case "${1:-help}" in
     restart)  cmd_restart ;;
     status)   cmd_status ;;
     setup-otp) cmd_setup_otp ;;
+    web)      shift; cmd_web "$@" ;;
     help|-h|--help) cmd_help ;;
     *) die "Unknown command: $1. Run 'devtunnel help' for usage." ;;
 esac

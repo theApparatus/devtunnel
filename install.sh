@@ -84,7 +84,7 @@ info "Tunnel ID: ${TUNNEL_ID}"
 info "Creating wildcard DNS record..."
 cloudflared tunnel route dns "$TUNNEL_NAME" "*.${DOMAIN}" 2>&1 || warn "DNS record may already exist"
 
-# Step 6: Install the script
+# Step 6: Install the script + web UI
 mkdir -p "$HOME/.local/bin"
 cp "${SCRIPT_DIR}/bin/devtunnel" "$HOME/.local/bin/devtunnel"
 chmod +x "$HOME/.local/bin/devtunnel"
@@ -92,6 +92,17 @@ chmod +x "$HOME/.local/bin/devtunnel"
 # Patch the script with user's values
 sed -i "s|^DOMAIN=.*|DOMAIN=\"${DOMAIN}\"|" "$HOME/.local/bin/devtunnel"
 sed -i "s|^TUNNEL_ID=.*|TUNNEL_ID=\"${TUNNEL_ID}\"|" "$HOME/.local/bin/devtunnel"
+
+# Install web UI
+mkdir -p "$HOME/.local/share/devtunnel/web/templates" "$HOME/.local/share/devtunnel/web/static"
+cp "${SCRIPT_DIR}/web/app.py" "$HOME/.local/share/devtunnel/web/"
+cp "${SCRIPT_DIR}/web/templates/index.html" "$HOME/.local/share/devtunnel/web/templates/"
+
+# Check for Flask
+if ! python3 -c "import flask" 2>/dev/null; then
+    info "Installing Flask for web UI..."
+    pip3 install --break-system-packages flask 2>/dev/null || pip3 install flask 2>/dev/null || warn "Could not install Flask. Web UI won't work."
+fi
 
 # Ensure PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -q "$HOME/.local/bin"; then
@@ -114,11 +125,13 @@ EOF
 
 info "Tunnel config written to ~/.cloudflared/config.yml"
 
-# Step 8: Systemd service
+# Step 8: Systemd services
 mkdir -p "$HOME/.config/systemd/user"
 cp "${SCRIPT_DIR}/systemd/cloudflared.service" "$HOME/.config/systemd/user/"
+cp "${SCRIPT_DIR}/systemd/devtunnel-web.service" "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
 systemctl --user enable --now cloudflared.service
+systemctl --user enable --now devtunnel-web.service
 
 # Enable linger
 sudo loginctl enable-linger "$USER" 2>/dev/null || warn "Could not enable linger (tunnel won't survive logout without it)"
@@ -175,4 +188,6 @@ echo ""
 echo "    devtunnel add myapp 3000 --public"
 echo "    devtunnel ls"
 echo "    devtunnel help"
+echo ""
+echo "  Web UI: http://127.0.0.1:7000"
 echo ""
