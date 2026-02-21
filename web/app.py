@@ -12,8 +12,8 @@ Usage:
 
 import json
 import os
+import re
 import subprocess
-import textwrap
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
@@ -145,6 +145,14 @@ def update_access_policy_emails(app_id, policy_id, emails):
     return result.get("success", False)
 
 
+def get_access_logs(limit=50):
+    account = get_cf_account()
+    result = cf_api("GET", f"/accounts/{account}/access/logs/access_requests?limit={limit}&direction=desc")
+    if result.get("success"):
+        return result.get("result", [])
+    return []
+
+
 # ── Config rebuild ──────────────────────────────────────────────────────────
 
 def rebuild_config():
@@ -215,12 +223,17 @@ def index():
 
 @app.route("/api/status")
 def api_status():
+    state = read_state()
+    project_count = len(state.get("projects", {}))
+    locked_count = sum(1 for p in state.get("projects", {}).values() if p.get("access") == "locked")
     return jsonify({
         "tunnel": get_tunnel_status(),
         "domain": DOMAIN,
         "tunnel_id": TUNNEL_ID,
         "has_api_token": bool(get_cf_token()),
         "has_account_id": bool(get_cf_account()),
+        "project_count": project_count,
+        "locked_count": locked_count,
     })
 
 
@@ -248,10 +261,8 @@ def api_add_project():
     access = data.get("access", "public")
     emails = data.get("emails", "").strip()
 
-    # Validate
     if not name:
         return jsonify({"error": "Name is required"}), 400
-    import re
     if not re.match(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", name):
         return jsonify({"error": "Name must be a valid subdomain (lowercase alphanumeric and hyphens)"}), 400
 
@@ -334,7 +345,6 @@ def api_update_emails(name):
     if not get_cf_token() or not get_cf_account():
         return jsonify({"error": "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID required"}), 400
 
-    # Get existing policies to find the one to update
     policies = get_access_app_policies(app_id)
     if policies:
         policy_id = policies[0].get("id")
@@ -352,6 +362,37 @@ def api_restart_tunnel():
     rebuild_config()
     msg = restart_tunnel()
     return jsonify({"ok": True, "message": msg})
+
+
+@app.route("/api/logs")
+def api_logs():
+    if not get_cf_token() or not get_cf_account():
+        return jsonify({"error": "API credentials not configured"}), 400
+
+    limit = request.args.get("limit", 50, type=int)
+    logs = get_access_logs(limit=min(limit, 100))
+
+    # Map to our domain's projects
+    state = read_state()
+    project_domains = {f"{n}.{DOMAIN}": n for n in state.get("projects", {})}
+
+    entries = []
+    for log in logs:
+        domain = log.get("app_domain", "")
+        project_name = project_domains.get(domain, "")
+        entries.append({
+            "email": log.get("user_email", ""),
+            "action": log.get("action", ""),
+            "allowed": log.get("allowed", False),
+            "domain": domain,
+            "project": project_name,
+            "ip": log.get("ip_address", ""),
+            "connection": log.get("connection", ""),
+            "created_at": log.get("created_at", ""),
+            "ray_id": log.get("ray_id", ""),
+        })
+
+    return jsonify(entries)
 
 
 # ── Main ────────────────────────────────────────────────────────────────────

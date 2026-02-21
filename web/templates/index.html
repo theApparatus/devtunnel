@@ -6,15 +6,20 @@
 <title>devtunnel</title>
 <style>
   :root {
-    --bg: #0d1117;
-    --surface: #161b22;
-    --border: #30363d;
+    --bg: #0a0e14;
+    --surface: #12171f;
+    --surface-hover: #1a2030;
+    --border: #252d3a;
     --text: #e6edf3;
-    --text-muted: #8b949e;
+    --text-muted: #7d8a9a;
     --accent: #58a6ff;
+    --accent-dim: rgba(88, 166, 255, 0.12);
     --green: #3fb950;
+    --green-dim: rgba(63, 185, 80, 0.12);
     --yellow: #d29922;
+    --yellow-dim: rgba(210, 153, 34, 0.12);
     --red: #f85149;
+    --red-dim: rgba(248, 81, 73, 0.12);
     --purple: #bc8cff;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -23,81 +28,174 @@
     background: var(--bg);
     color: var(--text);
     line-height: 1.5;
+    min-height: 100vh;
   }
-  .container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+  .container { max-width: 1040px; margin: 0 auto; padding: 32px 20px; }
 
-  /* Header */
-  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
-  header h1 { font-size: 22px; font-weight: 600; }
-  header h1 span { color: var(--text-muted); font-weight: 400; }
-  .status-bar { display: flex; gap: 16px; align-items: center; font-size: 13px; }
-  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
-  .status-dot.green { background: var(--green); }
-  .status-dot.red { background: var(--red); }
-  .status-dot.yellow { background: var(--yellow); }
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 28px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .header-left { display: flex; align-items: baseline; gap: 10px; }
+  header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+  .domain-tag {
+    font-size: 13px;
+    color: var(--accent);
+    background: var(--accent-dim);
+    padding: 2px 10px;
+    border-radius: 4px;
+    font-weight: 500;
+  }
+  .header-right { display: flex; gap: 12px; align-items: center; }
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-weight: 500;
+  }
+  .status-pill.running { background: var(--green-dim); color: var(--green); }
+  .status-pill.stopped { background: var(--red-dim); color: var(--red); }
+  .status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
-  /* Cards */
-  .card {
+  /* ── Stat cards ── */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 20px;
-    margin-bottom: 16px;
+    padding: 16px 20px;
   }
-  .card h2 { font-size: 15px; font-weight: 600; margin-bottom: 16px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-card .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }
+  .stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+  .stat-card .sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
 
-  /* Project list */
-  .project-list { display: flex; flex-direction: column; gap: 8px; }
+  /* ── Tabs ── */
+  .tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    padding: 10px 20px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+    user-select: none;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-count {
+    font-size: 11px;
+    background: var(--border);
+    padding: 1px 7px;
+    border-radius: 10px;
+    margin-left: 6px;
+    color: var(--text-muted);
+  }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ── Card ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0 0 8px 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .card.standalone { border-radius: 8px; }
+  .card h2 {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  /* ── Project list ── */
+  .project-list { display: flex; flex-direction: column; gap: 6px; }
   .project-item {
     display: grid;
     grid-template-columns: 1fr auto auto auto;
-    gap: 12px;
+    gap: 16px;
     align-items: center;
-    padding: 12px 16px;
+    padding: 14px 16px;
     background: var(--bg);
     border-radius: 6px;
     border: 1px solid var(--border);
+    transition: border-color 0.15s;
   }
-  .project-info { min-width: 0; }
-  .project-name { font-weight: 600; font-size: 15px; }
+  .project-item:hover { border-color: var(--text-muted); }
+  .project-name { font-weight: 600; font-size: 14px; }
   .project-name a { color: var(--accent); text-decoration: none; }
   .project-name a:hover { text-decoration: underline; }
-  .project-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .project-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; display: flex; align-items: center; gap: 6px; }
+  .port-tag { font-family: 'SF Mono', Consolas, monospace; background: var(--border); padding: 1px 6px; border-radius: 3px; font-size: 11px; }
   .badge {
     font-size: 11px;
-    padding: 2px 8px;
+    padding: 3px 10px;
     border-radius: 12px;
-    font-weight: 500;
+    font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.3px;
+    white-space: nowrap;
   }
-  .badge-public { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
-  .badge-locked { background: rgba(63, 185, 80, 0.15); color: var(--green); }
-  .email-list { font-size: 12px; color: var(--text-muted); max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .badge-public { background: var(--yellow-dim); color: var(--yellow); }
+  .badge-locked { background: var(--green-dim); color: var(--green); }
+  .email-list {
+    font-size: 12px;
+    color: var(--text-muted);
+    max-width: 220px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .actions { display: flex; gap: 6px; }
 
-  /* Buttons */
+  /* ── Buttons ── */
   .btn {
-    padding: 6px 14px;
+    padding: 7px 14px;
     border-radius: 6px;
     border: 1px solid var(--border);
     background: var(--surface);
     color: var(--text);
     font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
+    transition: all 0.15s;
+    white-space: nowrap;
   }
-  .btn:hover { border-color: var(--text-muted); }
-  .btn-primary { background: rgba(88, 166, 255, 0.15); border-color: var(--accent); color: var(--accent); }
-  .btn-primary:hover { background: rgba(88, 166, 255, 0.25); }
+  .btn:hover { border-color: var(--text-muted); background: var(--surface-hover); }
+  .btn-primary { background: var(--accent-dim); border-color: rgba(88,166,255,0.3); color: var(--accent); }
+  .btn-primary:hover { background: rgba(88, 166, 255, 0.2); border-color: var(--accent); }
   .btn-danger { color: var(--red); }
-  .btn-danger:hover { background: rgba(248, 81, 73, 0.1); border-color: var(--red); }
+  .btn-danger:hover { background: var(--red-dim); border-color: var(--red); }
   .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .btn-icon { padding: 5px 8px; font-size: 14px; line-height: 1; }
 
-  /* Forms */
-  .form-row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  /* ── Forms ── */
+  .form-row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: flex-end; }
   .form-group { display: flex; flex-direction: column; gap: 4px; }
-  .form-group label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+  .form-group label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
   .form-group input, .form-group select {
     padding: 8px 12px;
     background: var(--bg);
@@ -106,37 +204,41 @@
     color: var(--text);
     font-size: 14px;
     outline: none;
+    transition: border-color 0.15s;
   }
   .form-group input:focus, .form-group select:focus { border-color: var(--accent); }
   .form-group input::placeholder { color: var(--text-muted); }
+  .hidden { display: none !important; }
 
-  /* Toast */
+  /* ── Toast ── */
   .toast {
     position: fixed;
     bottom: 24px;
     right: 24px;
     padding: 12px 20px;
     border-radius: 8px;
-    font-size: 14px;
+    font-size: 13px;
+    font-weight: 500;
     opacity: 0;
     transform: translateY(10px);
     transition: opacity 0.3s, transform 0.3s;
     z-index: 1000;
-    max-width: 400px;
+    max-width: 420px;
   }
   .toast.show { opacity: 1; transform: translateY(0); }
-  .toast.success { background: rgba(63, 185, 80, 0.15); border: 1px solid var(--green); color: var(--green); }
-  .toast.error { background: rgba(248, 81, 73, 0.15); border: 1px solid var(--red); color: var(--red); }
+  .toast.success { background: var(--green-dim); border: 1px solid var(--green); color: var(--green); }
+  .toast.error { background: var(--red-dim); border: 1px solid var(--red); color: var(--red); }
 
-  /* Modal */
+  /* ── Modal ── */
   .modal-overlay {
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.6);
+    background: rgba(0,0,0,0.7);
     z-index: 100;
     justify-content: center;
     align-items: center;
+    backdrop-filter: blur(4px);
   }
   .modal-overlay.open { display: flex; }
   .modal {
@@ -144,10 +246,11 @@
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 24px;
-    width: 440px;
+    width: 460px;
     max-width: 90vw;
   }
-  .modal h3 { font-size: 16px; margin-bottom: 16px; }
+  .modal h3 { font-size: 16px; margin-bottom: 4px; }
+  .modal .modal-sub { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; }
   .modal .form-group { margin-bottom: 12px; }
   .modal .form-group input, .modal .form-group textarea {
     width: 100%;
@@ -160,26 +263,66 @@
     outline: none;
     font-family: inherit;
   }
-  .modal .form-group textarea { resize: vertical; min-height: 60px; }
-  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  .modal .form-group textarea { resize: vertical; min-height: 70px; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
 
-  /* Empty state */
+  /* ── Access Log ── */
+  .log-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .log-table th {
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .log-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .log-table tr:last-child td { border-bottom: none; }
+  .log-table tr:hover td { background: var(--surface-hover); }
+  .log-allowed { color: var(--green); font-weight: 600; }
+  .log-denied { color: var(--red); font-weight: 600; }
+  .log-email { font-weight: 500; }
+  .log-time { color: var(--text-muted); font-size: 12px; font-family: 'SF Mono', Consolas, monospace; }
+  .log-ip { color: var(--text-muted); font-family: 'SF Mono', Consolas, monospace; font-size: 12px; }
+  .log-domain { color: var(--accent); font-size: 12px; }
+
+  /* ── Empty state ── */
   .empty-state {
     text-align: center;
-    padding: 40px 20px;
+    padding: 48px 20px;
     color: var(--text-muted);
   }
-  .empty-state p { margin-bottom: 16px; }
+  .empty-state .icon { font-size: 32px; margin-bottom: 12px; opacity: 0.4; }
+  .empty-state p { margin-bottom: 8px; font-size: 14px; }
+  .empty-state .hint { font-size: 12px; }
 
-  /* Env warning */
+  /* ── Env warning ── */
   .env-warning {
-    background: rgba(210, 153, 34, 0.1);
-    border: 1px solid var(--yellow);
+    background: var(--yellow-dim);
+    border: 1px solid rgba(210,153,34,0.3);
     border-radius: 8px;
     padding: 12px 16px;
-    margin-bottom: 16px;
+    margin-bottom: 20px;
     font-size: 13px;
     color: var(--yellow);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .env-warning code { background: rgba(0,0,0,0.3); padding: 1px 6px; border-radius: 3px; font-size: 12px; }
+
+  /* ── Responsive ── */
+  @media (max-width: 700px) {
+    .stats { grid-template-columns: 1fr; }
+    .project-item { grid-template-columns: 1fr; gap: 8px; }
+    .form-row { flex-direction: column; }
+    .form-group { width: 100% !important; }
   }
 </style>
 </head>
@@ -187,57 +330,114 @@
 <div class="container">
 
   <header>
-    <h1>devtunnel <span>/ {{ domain }}</span></h1>
-    <div class="status-bar">
-      <span id="tunnel-status"><span class="status-dot yellow"></span> checking...</span>
-      <button class="btn btn-sm" onclick="restartTunnel()">Restart Tunnel</button>
+    <div class="header-left">
+      <h1>devtunnel</h1>
+      <span class="domain-tag">{{ domain }}</span>
+    </div>
+    <div class="header-right">
+      <div class="status-pill stopped" id="tunnel-status">
+        <span class="dot"></span>
+        <span>checking...</span>
+      </div>
+      <button class="btn btn-sm" onclick="restartTunnel()">Restart</button>
     </div>
   </header>
 
   <div id="env-warning" class="env-warning" style="display:none;">
-    Cloudflare API credentials not configured. Locked projects (email OTP) won't work.<br>
-    Set <code>CLOUDFLARE_API_TOKEN</code> and <code>CLOUDFLARE_ACCOUNT_ID</code> environment variables.
+    <span>&#9888;</span>
+    <span>Cloudflare API credentials not configured. Set <code>CLOUDFLARE_API_TOKEN</code> and <code>CLOUDFLARE_ACCOUNT_ID</code> in <code>~/.cloudflared/.env</code></span>
   </div>
 
-  <!-- Add Project -->
-  <div class="card">
-    <h2>Add Project</h2>
-    <form id="add-form" onsubmit="addProject(event)">
-      <div class="form-row">
-        <div class="form-group" style="flex:1;">
-          <label>Subdomain</label>
-          <input type="text" id="f-name" placeholder="myproject" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" required>
-        </div>
-        <div class="form-group" style="width:100px;">
-          <label>Port</label>
-          <input type="number" id="f-port" placeholder="3000" min="1" max="65535" required>
-        </div>
-        <div class="form-group" style="width:120px;">
-          <label>Access</label>
-          <select id="f-access" onchange="toggleEmails()">
-            <option value="public">Public</option>
-            <option value="locked">Locked</option>
-          </select>
-        </div>
-      </div>
-      <div class="form-row" id="emails-row" style="display:none;">
-        <div class="form-group" style="flex:1;">
-          <label>Allowed Emails (comma-separated)</label>
-          <input type="text" id="f-emails" placeholder="client@company.com, friend@gmail.com">
-        </div>
-      </div>
-      <div class="form-row">
-        <button type="submit" class="btn btn-primary">Add Project</button>
-      </div>
-    </form>
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat-card">
+      <div class="label">Projects</div>
+      <div class="value" id="stat-projects">0</div>
+      <div class="sub">active tunnels</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Locked</div>
+      <div class="value" id="stat-locked">0</div>
+      <div class="sub">email-gated</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Tunnel</div>
+      <div class="value" id="stat-tunnel" style="font-size:16px; margin-top:10px;">—</div>
+      <div class="sub" id="stat-tunnel-sub"></div>
+    </div>
   </div>
 
-  <!-- Project List -->
-  <div class="card">
-    <h2>Active Projects</h2>
-    <div id="project-list">
-      <div class="empty-state">
-        <p>No projects yet. Add one above to get started.</p>
+  <!-- Tabs -->
+  <div class="tabs">
+    <div class="tab active" data-tab="projects">Projects<span class="tab-count" id="tab-count-projects">0</span></div>
+    <div class="tab" data-tab="add">Add Project</div>
+    <div class="tab" data-tab="logs">Access Log<span class="tab-count" id="tab-count-logs">—</span></div>
+  </div>
+
+  <!-- Projects Panel -->
+  <div class="tab-panel active" id="panel-projects">
+    <div class="card">
+      <div id="project-list">
+        <div class="empty-state">
+          <div class="icon">&#9783;</div>
+          <p>No projects yet</p>
+          <p class="hint">Switch to the Add Project tab to get started</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Project Panel -->
+  <div class="tab-panel" id="panel-add">
+    <div class="card">
+      <h2>New Project</h2>
+      <form id="add-form" onsubmit="addProject(event)">
+        <div class="form-row">
+          <div class="form-group" style="flex:1;">
+            <label>Subdomain</label>
+            <input type="text" id="f-name" placeholder="myproject" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" required>
+          </div>
+          <div class="form-group" style="width:100px;">
+            <label>Port</label>
+            <input type="number" id="f-port" placeholder="3000" min="1" max="65535" required>
+          </div>
+          <div class="form-group" style="width:130px;">
+            <label>Access</label>
+            <select id="f-access" onchange="toggleEmails()">
+              <option value="public">Public</option>
+              <option value="locked">Locked</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row hidden" id="emails-row">
+          <div class="form-group" style="flex:1;">
+            <label>Allowed Emails (comma-separated)</label>
+            <input type="text" id="f-emails" placeholder="client@company.com, friend@gmail.com">
+          </div>
+        </div>
+        <div class="form-row" style="margin-top:4px;">
+          <button type="submit" class="btn btn-primary">Add Project</button>
+        </div>
+        <div id="add-preview" class="hidden" style="margin-top:12px; font-size:13px; color:var(--text-muted);">
+          URL will be: <strong id="preview-url" style="color:var(--accent);"></strong>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Logs Panel -->
+  <div class="tab-panel" id="panel-logs">
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h2 style="margin-bottom:0;">Access Events</h2>
+        <button class="btn btn-sm" onclick="loadLogs()">Refresh</button>
+      </div>
+      <div id="log-list">
+        <div class="empty-state">
+          <div class="icon">&#128274;</div>
+          <p>No access events yet</p>
+          <p class="hint">Events appear when someone visits a locked project</p>
+        </div>
       </div>
     </div>
   </div>
@@ -248,12 +448,10 @@
 <div class="modal-overlay" id="email-modal">
   <div class="modal">
     <h3>Edit Allowed Emails</h3>
-    <p style="font-size:13px; color:var(--text-muted); margin-bottom:12px;">
-      Project: <strong id="modal-project-name"></strong>
-    </p>
+    <div class="modal-sub">Project: <strong id="modal-project-name" style="color:var(--accent);"></strong></div>
     <div class="form-group">
-      <label>Emails (comma-separated)</label>
-      <textarea id="modal-emails" placeholder="client@company.com, friend@gmail.com"></textarea>
+      <label>Emails (one per line or comma-separated)</label>
+      <textarea id="modal-emails" placeholder="client@company.com&#10;friend@gmail.com"></textarea>
     </div>
     <div class="modal-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -266,8 +464,6 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const API = '';
-
 function toast(msg, type = 'success') {
   const el = document.getElementById('toast');
   el.textContent = msg;
@@ -276,7 +472,7 @@ function toast(msg, type = 'success') {
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch(API + path, {
+  const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
     ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
@@ -286,6 +482,18 @@ async function api(path, opts = {}) {
   return data;
 }
 
+// ── Tabs ──
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+    if (tab.dataset.tab === 'logs') loadLogs();
+  });
+});
+
 // ── Status ──
 
 async function loadStatus() {
@@ -293,16 +501,28 @@ async function loadStatus() {
     const s = await api('/api/status');
     const el = document.getElementById('tunnel-status');
     if (s.tunnel === 'running') {
-      el.innerHTML = '<span class="status-dot green"></span> Tunnel running';
+      el.className = 'status-pill running';
+      el.innerHTML = '<span class="dot"></span><span>Running</span>';
+      document.getElementById('stat-tunnel').textContent = 'Online';
+      document.getElementById('stat-tunnel').style.color = 'var(--green)';
     } else {
-      el.innerHTML = '<span class="status-dot red"></span> Tunnel stopped';
+      el.className = 'status-pill stopped';
+      el.innerHTML = '<span class="dot"></span><span>Stopped</span>';
+      document.getElementById('stat-tunnel').textContent = 'Offline';
+      document.getElementById('stat-tunnel').style.color = 'var(--red)';
     }
+    document.getElementById('stat-tunnel-sub').textContent = s.tunnel_id ? s.tunnel_id.slice(0,8) + '...' : '';
+    document.getElementById('stat-projects').textContent = s.project_count || 0;
+    document.getElementById('stat-locked').textContent = s.locked_count || 0;
+    document.getElementById('tab-count-projects').textContent = s.project_count || 0;
+
     if (!s.has_api_token || !s.has_account_id) {
-      document.getElementById('env-warning').style.display = 'block';
+      document.getElementById('env-warning').style.display = 'flex';
+    } else {
+      document.getElementById('env-warning').style.display = 'none';
     }
   } catch(e) {
-    document.getElementById('tunnel-status').innerHTML =
-      '<span class="status-dot red"></span> Error';
+    console.error('Status error:', e);
   }
 }
 
@@ -314,20 +534,24 @@ async function loadProjects() {
     const list = document.getElementById('project-list');
 
     if (projects.length === 0) {
-      list.innerHTML = '<div class="empty-state"><p>No projects yet. Add one above to get started.</p></div>';
+      list.innerHTML = '<div class="empty-state"><div class="icon">&#9783;</div><p>No projects yet</p><p class="hint">Switch to the Add Project tab to get started</p></div>';
       return;
     }
 
     list.innerHTML = projects.map(p => `
       <div class="project-item">
-        <div class="project-info">
-          <div class="project-name"><a href="${p.url}" target="_blank">${p.name}</a></div>
-          <div class="project-meta">localhost:${p.port} &rarr; ${p.url}</div>
+        <div>
+          <div class="project-name"><a href="${p.url}" target="_blank" rel="noopener">${p.name}</a></div>
+          <div class="project-meta">
+            <span class="port-tag">:${p.port}</span>
+            <span>&rarr;</span>
+            <span>${p.url}</span>
+          </div>
         </div>
         <span class="badge badge-${p.access}">${p.access}</span>
-        <div class="email-list" title="${p.emails || ''}">${p.access === 'locked' ? (p.emails || 'no emails') : '—'}</div>
+        <div class="email-list" title="${(p.emails || '').replace(/"/g, '&quot;')}">${p.access === 'locked' ? (p.emails || 'no emails') : '—'}</div>
         <div class="actions">
-          ${p.access === 'locked' ? `<button class="btn btn-sm" onclick="openEmailModal('${p.name}', '${p.emails.replace(/'/g, "\\'")}')">Edit Emails</button>` : ''}
+          ${p.access === 'locked' ? `<button class="btn btn-sm" onclick="openEmailModal('${p.name}', \`${(p.emails||'').replace(/`/g,'')}\`)">Emails</button>` : ''}
           <button class="btn btn-sm btn-danger" onclick="removeProject('${p.name}')">Remove</button>
         </div>
       </div>
@@ -339,12 +563,28 @@ async function loadProjects() {
 
 // ── Add project ──
 
+document.getElementById('f-name').addEventListener('input', function() {
+  const name = this.value.trim().toLowerCase();
+  const preview = document.getElementById('add-preview');
+  const url = document.getElementById('preview-url');
+  if (name) {
+    url.textContent = `https://${name}.{{ domain }}`;
+    preview.classList.remove('hidden');
+  } else {
+    preview.classList.add('hidden');
+  }
+});
+
 async function addProject(e) {
   e.preventDefault();
   const name = document.getElementById('f-name').value.trim().toLowerCase();
   const port = document.getElementById('f-port').value;
   const access = document.getElementById('f-access').value;
   const emails = document.getElementById('f-emails').value.trim();
+
+  const btn = e.target.querySelector('button[type=submit]');
+  btn.textContent = 'Adding...';
+  btn.disabled = true;
 
   try {
     const result = await api('/api/projects', {
@@ -353,26 +593,38 @@ async function addProject(e) {
     });
     toast(`Added ${name}.{{ domain }}`);
     document.getElementById('add-form').reset();
-    document.getElementById('emails-row').style.display = 'none';
+    document.getElementById('emails-row').classList.add('hidden');
+    document.getElementById('add-preview').classList.add('hidden');
     loadProjects();
+    loadStatus();
+    // Switch to projects tab
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelector('[data-tab="projects"]').classList.add('active');
+    document.getElementById('panel-projects').classList.add('active');
   } catch(e) {
     toast(e.message, 'error');
+  } finally {
+    btn.textContent = 'Add Project';
+    btn.disabled = false;
   }
 }
 
 function toggleEmails() {
   const access = document.getElementById('f-access').value;
-  document.getElementById('emails-row').style.display = access === 'locked' ? 'flex' : 'none';
+  const row = document.getElementById('emails-row');
+  if (access === 'locked') { row.classList.remove('hidden'); } else { row.classList.add('hidden'); }
 }
 
 // ── Remove project ──
 
 async function removeProject(name) {
-  if (!confirm(`Remove project "${name}"? This will delete the Access app if one exists.`)) return;
+  if (!confirm(`Remove "${name}"? This deletes the Access app if one exists.`)) return;
   try {
     await api(`/api/projects/${name}`, { method: 'DELETE' });
     toast(`Removed ${name}`);
     loadProjects();
+    loadStatus();
   } catch(e) {
     toast(e.message, 'error');
   }
@@ -384,9 +636,10 @@ let currentEditProject = '';
 
 function openEmailModal(name, emails) {
   currentEditProject = name;
-  document.getElementById('modal-project-name').textContent = name;
-  document.getElementById('modal-emails').value = emails;
+  document.getElementById('modal-project-name').textContent = name + '.{{ domain }}';
+  document.getElementById('modal-emails').value = emails.replace(/,\s*/g, '\n');
   document.getElementById('email-modal').classList.add('open');
+  document.getElementById('modal-emails').focus();
 }
 
 function closeModal() {
@@ -395,7 +648,8 @@ function closeModal() {
 }
 
 async function saveEmails() {
-  const emails = document.getElementById('modal-emails').value.trim();
+  const raw = document.getElementById('modal-emails').value.trim();
+  const emails = raw.split(/[\n,]+/).map(e => e.trim()).filter(Boolean).join(', ');
   try {
     await api(`/api/projects/${currentEditProject}/emails`, {
       method: 'PUT',
@@ -406,6 +660,53 @@ async function saveEmails() {
     loadProjects();
   } catch(e) {
     toast(e.message, 'error');
+  }
+}
+
+// ── Access Logs ──
+
+async function loadLogs() {
+  const container = document.getElementById('log-list');
+  try {
+    const logs = await api('/api/logs?limit=50');
+    document.getElementById('tab-count-logs').textContent = logs.length;
+
+    if (logs.length === 0) {
+      container.innerHTML = '<div class="empty-state"><div class="icon">&#128274;</div><p>No access events yet</p><p class="hint">Events appear when someone visits a locked project</p></div>';
+      return;
+    }
+
+    let html = `<table class="log-table">
+      <thead><tr>
+        <th>Status</th>
+        <th>Email</th>
+        <th>Project</th>
+        <th>Action</th>
+        <th>IP</th>
+        <th>Time</th>
+      </tr></thead><tbody>`;
+
+    for (const log of logs) {
+      const allowed = log.allowed;
+      const time = log.created_at ? new Date(log.created_at).toLocaleString() : '—';
+      const statusClass = allowed ? 'log-allowed' : 'log-denied';
+      const statusText = allowed ? 'Allowed' : 'Denied';
+      const project = log.project || log.domain || '—';
+
+      html += `<tr>
+        <td><span class="${statusClass}">${statusText}</span></td>
+        <td class="log-email">${log.email || '—'}</td>
+        <td class="log-domain">${project}</td>
+        <td>${log.action || '—'}</td>
+        <td class="log-ip">${log.ip || '—'}</td>
+        <td class="log-time">${time}</td>
+      </tr>`;
+    }
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = `<div class="empty-state"><p style="color:var(--red);">${e.message}</p></div>`;
   }
 }
 
@@ -421,7 +722,7 @@ async function restartTunnel() {
   }
 }
 
-// ── Escape key closes modal ──
+// ── Keyboard ──
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeModal();
 });
@@ -429,7 +730,6 @@ document.addEventListener('keydown', e => {
 // ── Init ──
 loadStatus();
 loadProjects();
-// Refresh status every 30s
 setInterval(loadStatus, 30000);
 </script>
 </body>
