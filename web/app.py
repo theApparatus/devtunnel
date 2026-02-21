@@ -361,4 +361,4 @@ if __name__ == "__main__":
     print(f"  Domain: {DOMAIN}")
     print(f"  State:  {STATE_FILE}")
     print(f"  Config: {TUNNEL_CONFIG}\n")
-    app.run(host="127.0.0.1", port=7000, debug=False)
+    app.run(host="0.0.0.0", port=7000, debug=False)
