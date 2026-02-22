@@ -84,6 +84,43 @@ info "Tunnel ID: ${TUNNEL_ID}"
 info "Creating wildcard DNS record..."
 cloudflared tunnel route dns "$TUNNEL_NAME" "*.${DOMAIN}" 2>&1 || warn "DNS record may already exist"
 
+# Step 5b: Tailscale detection (optional)
+echo ""
+echo -e "${CYAN}── Tailscale ──${NC}"
+echo ""
+if command -v tailscale &>/dev/null; then
+    TS_VERSION=$(tailscale version 2>/dev/null | head -1)
+    info "Tailscale installed: ${TS_VERSION}"
+    TS_STATUS=$(tailscale status --json 2>/dev/null || true)
+    if [[ -n "$TS_STATUS" ]]; then
+        TS_BACKEND=$(echo "$TS_STATUS" | jq -r '.BackendState // empty')
+        if [[ "$TS_BACKEND" == "Running" ]]; then
+            TS_HOSTNAME=$(echo "$TS_STATUS" | jq -r '.Self.DNSName // empty' | sed 's/\.$//')
+            info "Tailscale connected: ${GREEN}${TS_HOSTNAME}${NC}"
+
+            echo ""
+            read -rp "Enable Tailscale Funnel (public access via *.ts.net)? [y/N]: " ENABLE_FUNNEL
+            if [[ "${ENABLE_FUNNEL,,}" == "y" ]]; then
+                echo ""
+                info "Funnel must be enabled in your tailnet admin console."
+                echo "  Open: https://login.tailscale.com/admin/dns"
+                echo "  Enable HTTPS and Funnel for this device."
+                echo ""
+            fi
+        else
+            warn "Tailscale is installed but not connected."
+            echo "  Connect with: sudo tailscale up"
+        fi
+    else
+        warn "Tailscale is installed but not connected."
+        echo "  Connect with: sudo tailscale up"
+    fi
+else
+    info "Tailscale not installed (optional — for private tailnet tunnels)."
+    echo "  Install from: https://tailscale.com/download"
+fi
+echo ""
+
 # Step 6: Install the script + web UI
 mkdir -p "$HOME/.local/bin"
 cp "${SCRIPT_DIR}/bin/devtunnel" "$HOME/.local/bin/devtunnel"

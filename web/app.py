@@ -165,6 +165,8 @@ def rebuild_config():
         "ingress:",
     ]
     for name, proj in state.get("projects", {}).items():
+        if proj.get("provider", "cloudflare") == "tailscale":
+            continue
         lines.append(f'  - hostname: "{name}.{DOMAIN}"')
         lines.append(f"    service: http://localhost:{proj['port']}")
     lines.append("  - service: http_status:404")
@@ -213,6 +215,85 @@ def get_tunnel_status():
         return "stopped"
     except Exception:
         return "unknown"
+
+
+# ── Tailscale helpers ──────────────────────────────────────────────────────
+
+TS_FUNNEL_PORTS = [443, 8443, 10000]
+
+
+def detect_tailscale():
+    """Returns tailscale hostname or None."""
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+        if data.get("BackendState") != "Running":
+            return None
+        hostname = data.get("Self", {}).get("DNSName", "")
+        return hostname.rstrip(".") if hostname else None
+    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return None
+
+
+def ts_allocate_port(state, mode):
+    """Allocate an external HTTPS port for Tailscale serve/funnel."""
+    used_ports = set()
+    for proj in state.get("projects", {}).values():
+        if proj.get("provider") == "tailscale" and proj.get("ts_port"):
+            used_ports.add(int(proj["ts_port"]))
+
+    if mode == "funnel":
+        for p in TS_FUNNEL_PORTS:
+            if p not in used_ports:
+                return p
+        return None  # all funnel ports in use
+    else:
+        # Serve: try funnel ports first, then 4443, 5443, 6443, ...
+        for p in TS_FUNNEL_PORTS:
+            if p not in used_ports:
+                return p
+        base = 4443
+        while base <= 65535:
+            if base not in used_ports:
+                return base
+            base += 1000
+        return None
+
+
+def ts_add(local_port, ext_port, mode):
+    """Run tailscale serve/funnel to set up the tunnel."""
+    try:
+        result = subprocess.run(
+            ["tailscale", mode, f"--https={ext_port}", "--bg", f"localhost:{local_port}"],
+            capture_output=True, text=True, timeout=15
+        )
+        return result.returncode == 0, result.stderr.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+
+
+def ts_remove(ext_port, mode):
+    """Remove a tailscale serve/funnel."""
+    try:
+        subprocess.run(
+            ["tailscale", mode, f"--https={ext_port}", "off"],
+            capture_output=True, text=True, timeout=10
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+
+def ts_url(hostname, ext_port):
+    """Build the public/tailnet URL for a Tailscale project."""
+    ext_port = int(ext_port)
+    if ext_port == 443:
+        return f"https://{hostname}"
+    return f"https://{hostname}:{ext_port}"
 
 
 # ── App service management ─────────────────────────────────────────────────
@@ -301,8 +382,11 @@ def index():
 @app.route("/api/status")
 def api_status():
     state = read_state()
-    project_count = len(state.get("projects", {}))
-    locked_count = sum(1 for p in state.get("projects", {}).values() if p.get("access") == "locked")
+    projects = state.get("projects", {})
+    project_count = len(projects)
+    locked_count = sum(1 for p in projects.values() if p.get("access") == "locked")
+    ts_count = sum(1 for p in projects.values() if p.get("provider") == "tailscale")
+    ts_hostname = detect_tailscale()
     return jsonify({
         "tunnel": get_tunnel_status(),
         "domain": DOMAIN,
@@ -311,21 +395,32 @@ def api_status():
         "has_account_id": bool(get_cf_account()),
         "project_count": project_count,
         "locked_count": locked_count,
+        "tailscale_available": ts_hostname is not None,
+        "tailscale_hostname": ts_hostname or "",
+        "ts_project_count": ts_count,
     })
 
 
 @app.route("/api/projects")
 def api_projects():
     state = read_state()
+    ts_hostname = detect_tailscale()
     projects = []
     for name, proj in state.get("projects", {}).items():
+        provider = proj.get("provider", "cloudflare")
+        if provider == "tailscale" and ts_hostname and proj.get("ts_port"):
+            url = ts_url(ts_hostname, proj["ts_port"])
+        else:
+            url = f"https://{name}.{DOMAIN}"
         projects.append({
             "name": name,
             "port": proj.get("port"),
+            "provider": provider,
             "access": proj.get("access", "public"),
             "emails": proj.get("emails", ""),
             "access_app_id": proj.get("access_app_id", ""),
-            "url": f"https://{name}.{DOMAIN}",
+            "ts_port": proj.get("ts_port", ""),
+            "url": url,
             "dir": proj.get("dir", ""),
             "cmd": proj.get("cmd", ""),
             "service": get_app_service_status(name),
@@ -338,7 +433,9 @@ def api_add_project():
     data = request.json or {}
     name = data.get("name", "").strip().lower()
     port = data.get("port")
+    provider = data.get("provider", "cloudflare")
     access = data.get("access", "public")
+    ts_mode = data.get("ts_mode", "serve")  # serve or funnel
     emails = data.get("emails", "").strip()
     directory = data.get("dir", "").strip()
     cmd = data.get("cmd", "").strip()
@@ -362,37 +459,73 @@ def api_add_project():
     if name in state.get("projects", {}):
         return jsonify({"error": f"Project '{name}' already exists"}), 409
 
-    access_app_id = ""
-    if access == "locked":
-        if not emails:
-            return jsonify({"error": "Locked access requires at least one email"}), 400
-        if not get_cf_token() or not get_cf_account():
-            return jsonify({"error": "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set for locked projects"}), 400
-        access_app_id, err = create_access_app(name, emails)
-        if err:
-            return jsonify({"error": err}), 500
+    if provider == "tailscale":
+        # Tailscale path
+        ts_hostname = detect_tailscale()
+        if not ts_hostname:
+            return jsonify({"error": "Tailscale is not available. Install and connect: sudo tailscale up"}), 400
 
-    state.setdefault("projects", {})[name] = {
-        "port": port,
-        "access": access,
-        "emails": emails,
-        "access_app_id": access_app_id or "",
-        "dir": directory,
-        "cmd": cmd,
-    }
-    write_state(state)
-    rebuild_config()
-    tunnel_msg = restart_tunnel()
+        ts_port = ts_allocate_port(state, ts_mode)
+        if ts_port is None:
+            if ts_mode == "funnel":
+                return jsonify({"error": "All Tailscale Funnel ports (443, 8443, 10000) are in use. Remove a Funnel project first."}), 400
+            return jsonify({"error": "No available Tailscale ports"}), 400
 
-    # Create app service if dir and cmd are provided
-    if directory and cmd:
-        create_app_service(name, directory, cmd, port)
+        ok, err_msg = ts_add(port, ts_port, ts_mode)
+        if not ok:
+            if ts_mode == "funnel":
+                return jsonify({"error": f"Tailscale Funnel failed. Enable it in your tailnet admin console. {err_msg}"}), 500
+            return jsonify({"error": f"Tailscale Serve failed: {err_msg}"}), 500
 
-    return jsonify({
-        "ok": True,
-        "url": f"https://{name}.{DOMAIN}",
-        "tunnel": tunnel_msg,
-    })
+        state.setdefault("projects", {})[name] = {
+            "port": port,
+            "provider": "tailscale",
+            "access": ts_mode,
+            "ts_port": ts_port,
+            "dir": directory,
+            "cmd": cmd,
+        }
+        write_state(state)
+
+        if directory and cmd:
+            create_app_service(name, directory, cmd, port)
+
+        url = ts_url(ts_hostname, ts_port)
+        return jsonify({"ok": True, "url": url})
+
+    else:
+        # Cloudflare path
+        access_app_id = ""
+        if access == "locked":
+            if not emails:
+                return jsonify({"error": "Locked access requires at least one email"}), 400
+            if not get_cf_token() or not get_cf_account():
+                return jsonify({"error": "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set for locked projects"}), 400
+            access_app_id, err = create_access_app(name, emails)
+            if err:
+                return jsonify({"error": err}), 500
+
+        state.setdefault("projects", {})[name] = {
+            "port": port,
+            "provider": "cloudflare",
+            "access": access,
+            "emails": emails,
+            "access_app_id": access_app_id or "",
+            "dir": directory,
+            "cmd": cmd,
+        }
+        write_state(state)
+        rebuild_config()
+        tunnel_msg = restart_tunnel()
+
+        if directory and cmd:
+            create_app_service(name, directory, cmd, port)
+
+        return jsonify({
+            "ok": True,
+            "url": f"https://{name}.{DOMAIN}",
+            "tunnel": tunnel_msg,
+        })
 
 
 @app.route("/api/projects/<name>", methods=["DELETE"])
@@ -402,19 +535,30 @@ def api_remove_project(name):
         return jsonify({"error": f"Project '{name}' not found"}), 404
 
     proj = state["projects"][name]
-    app_id = proj.get("access_app_id")
-    if app_id:
-        if not get_cf_token() or not get_cf_account():
-            return jsonify({"error": "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID needed to delete Access app"}), 400
-        delete_access_app(app_id)
+    provider = proj.get("provider", "cloudflare")
+
+    if provider == "tailscale":
+        ts_port = proj.get("ts_port")
+        ts_access = proj.get("access", "serve")
+        if ts_port:
+            ts_remove(ts_port, ts_access)
+    else:
+        app_id = proj.get("access_app_id")
+        if app_id:
+            if not get_cf_token() or not get_cf_account():
+                return jsonify({"error": "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID needed to delete Access app"}), 400
+            delete_access_app(app_id)
 
     # Remove app service if it exists
     remove_app_service(name)
 
     del state["projects"][name]
     write_state(state)
-    rebuild_config()
-    tunnel_msg = restart_tunnel()
+
+    tunnel_msg = ""
+    if provider != "tailscale":
+        rebuild_config()
+        tunnel_msg = restart_tunnel()
 
     return jsonify({"ok": True, "tunnel": tunnel_msg})
 
@@ -429,6 +573,8 @@ def api_update_emails(name):
         return jsonify({"error": f"Project '{name}' not found"}), 404
 
     proj = state["projects"][name]
+    if proj.get("provider", "cloudflare") == "tailscale":
+        return jsonify({"error": "Email access control is not supported with Tailscale"}), 400
     if proj.get("access") != "locked":
         return jsonify({"error": "Project is not locked — change access type first"}), 400
 

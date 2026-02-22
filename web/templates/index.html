@@ -21,6 +21,9 @@
     --red: #f85149;
     --red-dim: rgba(248, 81, 73, 0.12);
     --purple: #bc8cff;
+    --purple-dim: rgba(188, 140, 255, 0.12);
+    --indigo: #818cf8;
+    --indigo-dim: rgba(129, 140, 248, 0.12);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -68,7 +71,7 @@
   /* ── Stat cards ── */
   .stats {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 12px;
     margin-bottom: 24px;
   }
@@ -135,7 +138,7 @@
   .project-list { display: flex; flex-direction: column; gap: 6px; }
   .project-item {
     display: grid;
-    grid-template-columns: 1fr auto auto auto auto;
+    grid-template-columns: 1fr auto auto auto auto auto;
     gap: 16px;
     align-items: center;
     padding: 14px 16px;
@@ -164,6 +167,10 @@
   .badge-running { background: var(--green-dim); color: var(--green); }
   .badge-stopped { background: var(--red-dim); color: var(--red); }
   .badge-none { background: var(--border); color: var(--text-muted); }
+  .badge-serve { background: var(--indigo-dim); color: var(--indigo); }
+  .badge-funnel { background: var(--purple-dim); color: var(--purple); }
+  .badge-cf { background: var(--yellow-dim); color: var(--yellow); }
+  .badge-ts { background: var(--indigo-dim); color: var(--indigo); }
   .email-list {
     font-size: 12px;
     color: var(--text-muted);
@@ -343,9 +350,13 @@
     <div class="header-right">
       <div class="status-pill stopped" id="tunnel-status">
         <span class="dot"></span>
-        <span>checking...</span>
+        <span>CF: checking...</span>
       </div>
-      <button class="btn btn-sm" onclick="restartTunnel()">Restart</button>
+      <div class="status-pill stopped" id="ts-status" style="display:none;">
+        <span class="dot"></span>
+        <span>TS: checking...</span>
+      </div>
+      <button class="btn btn-sm" onclick="restartTunnel()">Restart CF</button>
     </div>
   </header>
 
@@ -367,9 +378,14 @@
       <div class="sub">email-gated</div>
     </div>
     <div class="stat-card">
-      <div class="label">Tunnel</div>
+      <div class="label">CF Tunnel</div>
       <div class="value" id="stat-tunnel" style="font-size:16px; margin-top:10px;">—</div>
       <div class="sub" id="stat-tunnel-sub"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Tailscale</div>
+      <div class="value" id="stat-tailscale" style="font-size:16px; margin-top:10px;">—</div>
+      <div class="sub" id="stat-tailscale-sub"></div>
     </div>
   </div>
 
@@ -400,14 +416,21 @@
       <form id="add-form" onsubmit="addProject(event)">
         <div class="form-row">
           <div class="form-group" style="flex:1;">
-            <label>Subdomain</label>
+            <label>Name</label>
             <input type="text" id="f-name" placeholder="myproject" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" required>
           </div>
           <div class="form-group" style="width:100px;">
             <label>Port</label>
             <input type="number" id="f-port" placeholder="3000" min="1" max="65535" required>
           </div>
-          <div class="form-group" style="width:130px;">
+          <div class="form-group" style="width:140px;">
+            <label>Provider</label>
+            <select id="f-provider" onchange="toggleProvider()">
+              <option value="cloudflare">Cloudflare</option>
+              <option value="tailscale" id="opt-tailscale">Tailscale</option>
+            </select>
+          </div>
+          <div class="form-group" style="width:150px;">
             <label>Access</label>
             <select id="f-access" onchange="toggleEmails()">
               <option value="public">Public</option>
@@ -515,18 +538,21 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 // ── Status ──
 
+let tsAvailable = false;
+let tsHostname = '';
+
 async function loadStatus() {
   try {
     const s = await api('/api/status');
     const el = document.getElementById('tunnel-status');
     if (s.tunnel === 'running') {
       el.className = 'status-pill running';
-      el.innerHTML = '<span class="dot"></span><span>Running</span>';
+      el.innerHTML = '<span class="dot"></span><span>CF: Running</span>';
       document.getElementById('stat-tunnel').textContent = 'Online';
       document.getElementById('stat-tunnel').style.color = 'var(--green)';
     } else {
       el.className = 'status-pill stopped';
-      el.innerHTML = '<span class="dot"></span><span>Stopped</span>';
+      el.innerHTML = '<span class="dot"></span><span>CF: Stopped</span>';
       document.getElementById('stat-tunnel').textContent = 'Offline';
       document.getElementById('stat-tunnel').style.color = 'var(--red)';
     }
@@ -534,6 +560,32 @@ async function loadStatus() {
     document.getElementById('stat-projects').textContent = s.project_count || 0;
     document.getElementById('stat-locked').textContent = s.locked_count || 0;
     document.getElementById('tab-count-projects').textContent = s.project_count || 0;
+
+    // Tailscale status
+    tsAvailable = s.tailscale_available || false;
+    tsHostname = s.tailscale_hostname || '';
+    const tsEl = document.getElementById('ts-status');
+    const tsStat = document.getElementById('stat-tailscale');
+    const tsStatSub = document.getElementById('stat-tailscale-sub');
+    const tsOpt = document.getElementById('opt-tailscale');
+
+    if (tsAvailable) {
+      tsEl.style.display = 'flex';
+      tsEl.className = 'status-pill running';
+      tsEl.innerHTML = '<span class="dot"></span><span>TS: Connected</span>';
+      tsStat.textContent = s.ts_project_count || 0;
+      tsStat.style.cssText = 'font-size:28px; margin-top:4px; color: var(--text);';
+      tsStatSub.textContent = tsHostname;
+      if (tsOpt) tsOpt.disabled = false;
+    } else {
+      tsEl.style.display = 'flex';
+      tsEl.className = 'status-pill stopped';
+      tsEl.innerHTML = '<span class="dot"></span><span>TS: N/A</span>';
+      tsStat.textContent = 'N/A';
+      tsStat.style.cssText = 'font-size:16px; margin-top:10px; color: var(--text-muted);';
+      tsStatSub.textContent = 'not installed';
+      if (tsOpt) tsOpt.disabled = true;
+    }
 
     if (!s.has_api_token || !s.has_account_id) {
       document.getElementById('env-warning').style.display = 'flex';
@@ -558,8 +610,12 @@ async function loadProjects() {
     }
 
     list.innerHTML = projects.map(p => {
-      const hasSvc = p.service !== 'none';
-      const svcLabel = p.service === 'running' ? 'running' : p.service === 'stopped' ? 'stopped' : (p.dir && p.cmd ? 'ready' : 'none');
+      const provider = p.provider || 'cloudflare';
+      const isTS = provider === 'tailscale';
+      const providerBadge = isTS
+        ? '<span class="badge badge-ts">TS</span>'
+        : '<span class="badge badge-cf">CF</span>';
+
       const svcBadge = p.service === 'running'
         ? '<span class="badge badge-running">running</span>'
         : p.service === 'stopped'
@@ -575,6 +631,12 @@ async function loadProjects() {
           }
         </div>` : '';
 
+      const accessBadge = (p.access === 'serve')
+        ? '<span class="badge badge-serve">serve</span>'
+        : (p.access === 'funnel')
+          ? '<span class="badge badge-funnel">funnel</span>'
+          : `<span class="badge badge-${p.access}">${p.access}</span>`;
+
       return `
       <div class="project-item">
         <div>
@@ -586,8 +648,9 @@ async function loadProjects() {
             ${p.cmd ? `<span style="color:var(--text-muted);">&middot; ${p.cmd}</span>` : ''}
           </div>
         </div>
+        ${providerBadge}
         ${svcBadge}${svcButtons}
-        <span class="badge badge-${p.access}">${p.access}</span>
+        ${accessBadge}
         <div class="actions">
           ${p.access === 'locked' ? `<button class="btn btn-sm" onclick="openEmailModal('${p.name}', \`${(p.emails||'').replace(/`/g,'')}\`)">Emails</button>` : ''}
           <button class="btn btn-sm btn-danger" onclick="removeProject('${p.name}')">Remove</button>
@@ -601,26 +664,26 @@ async function loadProjects() {
 
 // ── Add project ──
 
-document.getElementById('f-name').addEventListener('input', function() {
-  const name = this.value.trim().toLowerCase();
-  const preview = document.getElementById('add-preview');
-  const url = document.getElementById('preview-url');
-  if (name) {
-    url.textContent = `https://${name}.{{ domain }}`;
-    preview.classList.remove('hidden');
-  } else {
-    preview.classList.add('hidden');
-  }
-});
+document.getElementById('f-name').addEventListener('input', updatePreview);
 
 async function addProject(e) {
   e.preventDefault();
   const name = document.getElementById('f-name').value.trim().toLowerCase();
   const port = document.getElementById('f-port').value;
+  const provider = document.getElementById('f-provider').value;
   const access = document.getElementById('f-access').value;
   const emails = document.getElementById('f-emails').value.trim();
   const dir = document.getElementById('f-dir').value.trim();
   const cmd = document.getElementById('f-cmd').value.trim();
+
+  const body = { name, port, provider, dir, cmd };
+  if (provider === 'tailscale') {
+    body.ts_mode = access; // 'serve' or 'funnel'
+    body.access = access;
+  } else {
+    body.access = access;
+    body.emails = emails;
+  }
 
   const btn = e.target.querySelector('button[type=submit]');
   btn.textContent = 'Adding...';
@@ -629,12 +692,13 @@ async function addProject(e) {
   try {
     const result = await api('/api/projects', {
       method: 'POST',
-      body: { name, port, access, emails, dir, cmd },
+      body,
     });
-    toast(`Added ${name}.{{ domain }}`);
+    toast(`Added ${name}` + (result.url ? ` — ${result.url}` : ''));
     document.getElementById('add-form').reset();
     document.getElementById('emails-row').classList.add('hidden');
     document.getElementById('add-preview').classList.add('hidden');
+    toggleProvider();
     loadProjects();
     loadStatus();
     // Switch to projects tab
@@ -650,10 +714,42 @@ async function addProject(e) {
   }
 }
 
+function toggleProvider() {
+  const provider = document.getElementById('f-provider').value;
+  const accessSel = document.getElementById('f-access');
+  const emailsRow = document.getElementById('emails-row');
+
+  if (provider === 'tailscale') {
+    accessSel.innerHTML = '<option value="serve">Serve (tailnet)</option><option value="funnel">Funnel (public)</option>';
+    emailsRow.classList.add('hidden');
+  } else {
+    accessSel.innerHTML = '<option value="public">Public</option><option value="locked">Locked</option>';
+  }
+  toggleEmails();
+  updatePreview();
+}
+
 function toggleEmails() {
   const access = document.getElementById('f-access').value;
   const row = document.getElementById('emails-row');
   if (access === 'locked') { row.classList.remove('hidden'); } else { row.classList.add('hidden'); }
+}
+
+function updatePreview() {
+  const name = document.getElementById('f-name').value.trim().toLowerCase();
+  const provider = document.getElementById('f-provider').value;
+  const preview = document.getElementById('add-preview');
+  const url = document.getElementById('preview-url');
+  if (name) {
+    if (provider === 'tailscale' && tsHostname) {
+      url.textContent = `https://${tsHostname}:<port>`;
+    } else {
+      url.textContent = `https://${name}.{{ domain }}`;
+    }
+    preview.classList.remove('hidden');
+  } else {
+    preview.classList.add('hidden');
+  }
 }
 
 // ── Remove project ──
