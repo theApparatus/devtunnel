@@ -330,6 +330,36 @@
   }
   .env-warning code { background: rgba(0,0,0,0.3); padding: 1px 6px; border-radius: 3px; font-size: 12px; }
 
+  /* ── Health detail ── */
+  .health-reason {
+    font-size: 11px;
+    color: var(--red);
+    font-weight: 500;
+    margin-left: 4px;
+  }
+  .health-tooltip {
+    position: relative;
+    display: inline-block;
+    cursor: help;
+  }
+  .health-tooltip .health-tip-content {
+    display: none;
+    position: absolute;
+    bottom: 120%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    z-index: 50;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  }
+  .health-tooltip:hover .health-tip-content { display: block; }
+
   /* ── Responsive ── */
   @media (max-width: 700px) {
     .stats { grid-template-columns: 1fr; }
@@ -394,6 +424,7 @@
     <div class="tab active" data-tab="projects">Projects<span class="tab-count" id="tab-count-projects">0</span></div>
     <div class="tab" data-tab="add">Add Project</div>
     <div class="tab" data-tab="logs">Access Log<span class="tab-count" id="tab-count-logs">—</span></div>
+    <div class="tab" data-tab="opslog">Operations Log</div>
   </div>
 
   <!-- Projects Panel -->
@@ -484,6 +515,28 @@
     </div>
   </div>
 
+  <!-- Operations Log Panel -->
+  <div class="tab-panel" id="panel-opslog">
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h2 style="margin-bottom:0;">Operations Log</h2>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <select id="opslog-filter" onchange="loadOpsLog()" style="padding:4px 10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:12px;">
+            <option value="">All projects</option>
+          </select>
+          <button class="btn btn-sm" onclick="loadOpsLog()">Refresh</button>
+        </div>
+      </div>
+      <div id="opslog-list">
+        <div class="empty-state">
+          <div class="icon">&#128220;</div>
+          <p>No operations logged yet</p>
+          <p class="hint">CLI and web actions will appear here</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <!-- Edit Emails Modal -->
@@ -498,6 +551,30 @@
     <div class="modal-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="saveEmails()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Project Modal -->
+<div class="modal-overlay" id="edit-modal">
+  <div class="modal">
+    <h3>Edit Project</h3>
+    <div class="modal-sub">Project: <strong id="edit-modal-name" style="color:var(--accent);"></strong></div>
+    <div class="form-group">
+      <label>Port</label>
+      <input type="number" id="edit-port" min="1" max="65535">
+    </div>
+    <div class="form-group">
+      <label>Working Directory</label>
+      <input type="text" id="edit-dir" placeholder="/home/user/projects/myapp">
+    </div>
+    <div class="form-group">
+      <label>Start Command</label>
+      <input type="text" id="edit-cmd" placeholder="npm run dev">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeEditModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveProjectEdit()">Save</button>
     </div>
   </div>
 </div>
@@ -533,6 +610,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
     if (tab.dataset.tab === 'logs') loadLogs();
+    if (tab.dataset.tab === 'opslog') loadOpsLog();
   });
 });
 
@@ -540,6 +618,8 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 let tsAvailable = false;
 let tsHostname = '';
+let unhealthyProjects = [];
+let healthDetail = {};
 
 async function loadStatus() {
   try {
@@ -586,6 +666,9 @@ async function loadStatus() {
       tsStatSub.textContent = 'not installed';
       if (tsOpt) tsOpt.disabled = true;
     }
+
+    unhealthyProjects = s.unhealthy_projects || [];
+    healthDetail = s.health_detail || {};
 
     if (!s.has_api_token || !s.has_account_id) {
       document.getElementById('env-warning').style.display = 'flex';
@@ -637,10 +720,25 @@ async function loadProjects() {
           ? '<span class="badge badge-funnel">funnel</span>'
           : `<span class="badge badge-${p.access}">${p.access}</span>`;
 
+      const isUnhealthy = unhealthyProjects.includes(p.name);
+      const hd = healthDetail[p.name];
+      let healthBadge = '';
+      if (isUnhealthy && hd) {
+        const tipParts = [];
+        if (hd.failures) tipParts.push(`Failures: ${hd.failures}`);
+        if (hd.last_check) tipParts.push(`Last check: ${new Date(hd.last_check).toLocaleString()}`);
+        if (hd.last_restart) tipParts.push(`Last restart: ${new Date(hd.last_restart).toLocaleString()}`);
+        const tipContent = tipParts.length ? `<span class="health-tip-content">${tipParts.join('<br>')}</span>` : '';
+        const reason = hd.last_status || 'unhealthy';
+        healthBadge = ` <span class="health-tooltip"><span style="color:var(--red); font-size:12px;">&#9888;</span><span class="health-reason">${reason}</span>${tipContent}</span>`;
+      } else if (isUnhealthy) {
+        healthBadge = ' <span style="color:var(--red); font-size:12px;" title="Health check failing">&#9888;</span>';
+      }
+
       return `
       <div class="project-item">
         <div>
-          <div class="project-name"><a href="${p.url}" target="_blank" rel="noopener">${p.name}</a></div>
+          <div class="project-name"><a href="${p.url}" target="_blank" rel="noopener">${p.name}</a>${healthBadge}</div>
           <div class="project-meta">
             <span class="port-tag">:${p.port}</span>
             <span>&rarr;</span>
@@ -652,6 +750,7 @@ async function loadProjects() {
         ${svcBadge}${svcButtons}
         ${accessBadge}
         <div class="actions">
+          <button class="btn btn-sm" onclick="openEditModal('${p.name}', ${p.port}, \`${(p.dir||'').replace(/`/g,'')}\`, \`${(p.cmd||'').replace(/`/g,'')}\`)">Edit</button>
           ${p.access === 'locked' ? `<button class="btn btn-sm" onclick="openEmailModal('${p.name}', \`${(p.emails||'').replace(/`/g,'')}\`)">Emails</button>` : ''}
           <button class="btn btn-sm btn-danger" onclick="removeProject('${p.name}')">Remove</button>
         </div>
@@ -802,10 +901,22 @@ async function saveEmails() {
 // ── Service control ──
 
 async function svcAction(name, action) {
+  const verb = action === 'start' ? 'Starting' : action === 'stop' ? 'Stopping' : 'Restarting';
+  const past = action === 'start' ? 'Started' : action === 'stop' ? 'Stopped' : 'Restarted';
+  if (action !== 'stop') toast(`${verb} ${name}... checking health`, 'success');
   try {
     const result = await api(`/api/projects/${name}/service/${action}`, { method: 'POST' });
-    toast(`${action === 'start' ? 'Started' : action === 'stop' ? 'Stopped' : 'Restarted'} ${name}`);
+    if (result.health) {
+      if (result.health.ready) {
+        toast(`${past} ${name} (${result.health.detail})`);
+      } else {
+        toast(`${past} ${name} but not responding: ${result.health.detail}`, 'error');
+      }
+    } else {
+      toast(`${past} ${name}`);
+    }
     loadProjects();
+    loadStatus();
   } catch(e) {
     toast(e.message, 'error');
   }
@@ -870,9 +981,107 @@ async function restartTunnel() {
   }
 }
 
+// ── Edit project modal ──
+
+let currentEditProjectName = '';
+
+function openEditModal(name, port, dir, cmd) {
+  currentEditProjectName = name;
+  document.getElementById('edit-modal-name').textContent = name;
+  document.getElementById('edit-port').value = port || '';
+  document.getElementById('edit-dir').value = dir || '';
+  document.getElementById('edit-cmd').value = cmd || '';
+  document.getElementById('edit-modal').classList.add('open');
+  document.getElementById('edit-port').focus();
+}
+
+function closeEditModal() {
+  document.getElementById('edit-modal').classList.remove('open');
+  currentEditProjectName = '';
+}
+
+async function saveProjectEdit() {
+  const port = document.getElementById('edit-port').value;
+  const dir = document.getElementById('edit-dir').value.trim();
+  const cmd = document.getElementById('edit-cmd').value.trim();
+
+  const body = {};
+  if (port) body.port = parseInt(port, 10);
+  if (dir) body.dir = dir;
+  if (cmd) body.cmd = cmd;
+
+  try {
+    await api(`/api/projects/${currentEditProjectName}`, {
+      method: 'PATCH',
+      body,
+    });
+    toast(`Updated ${currentEditProjectName}`);
+    closeEditModal();
+    loadProjects();
+    loadStatus();
+  } catch(e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ── Operations log ──
+
+async function loadOpsLog() {
+  const container = document.getElementById('opslog-list');
+  const filter = document.getElementById('opslog-filter').value;
+  const params = new URLSearchParams({limit: '100'});
+  if (filter) params.set('project', filter);
+
+  try {
+    const logs = await api(`/api/operations-log?${params}`);
+
+    if (logs.length === 0) {
+      container.innerHTML = '<div class="empty-state"><div class="icon">&#128220;</div><p>No operations logged yet</p><p class="hint">CLI and web actions will appear here</p></div>';
+      return;
+    }
+
+    // Populate filter dropdown with unique project names
+    const filterEl = document.getElementById('opslog-filter');
+    const currentVal = filterEl.value;
+    const projects = [...new Set(logs.map(l => l.project).filter(Boolean))];
+    filterEl.innerHTML = '<option value="">All projects</option>' +
+      projects.map(p => `<option value="${p}" ${p === currentVal ? 'selected' : ''}>${p}</option>`).join('');
+
+    let html = `<table class="log-table">
+      <thead><tr>
+        <th>Time</th>
+        <th>Level</th>
+        <th>Source</th>
+        <th>Action</th>
+        <th>Project</th>
+        <th>Message</th>
+      </tr></thead><tbody>`;
+
+    for (const log of logs) {
+      const time = log.ts ? new Date(log.ts).toLocaleString() : '—';
+      const levelClass = log.level === 'error' ? 'log-denied' : log.level === 'warn' ? 'style="color:var(--yellow);"' : 'log-allowed';
+      const levelAttr = log.level === 'warn' ? 'style="color:var(--yellow); font-weight:600;"' : '';
+
+      html += `<tr>
+        <td class="log-time">${time}</td>
+        <td><span class="${log.level === 'error' ? 'log-denied' : log.level === 'info' ? 'log-allowed' : ''}" ${levelAttr}>${log.level || '—'}</span></td>
+        <td>${log.source || '—'}</td>
+        <td>${log.action || '—'}</td>
+        <td class="log-domain">${log.project || '—'}</td>
+        <td style="color:var(--text-muted); font-size:12px;">${log.msg || '—'}</td>
+      </tr>`;
+    }
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = `<div class="empty-state"><p style="color:var(--red);">${e.message}</p></div>`;
+  }
+}
+
 // ── Keyboard ──
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeModal();
+  if (e.key === 'Escape') { closeModal(); closeEditModal(); }
 });
 
 // ── Init ──

@@ -14,6 +14,10 @@ import json
 import os
 import re
 import subprocess
+import time
+import urllib.request
+import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
@@ -29,6 +33,27 @@ STATE_FILE = CONFIG_DIR / "devtunnel.json"
 TUNNEL_CONFIG = CONFIG_DIR / "config.yml"
 CF_API = "https://api.cloudflare.com/client/v4"
 SERVICE_PREFIX = "devtunnel-app"
+
+# ── Structured Logging ─────────────────────────────────────────────────────
+
+LOG_DIR = Path.home() / ".local" / "share" / "devtunnel" / "logs"
+LOG_FILE = LOG_DIR / "devtunnel.log"
+MAX_LOG_SIZE = 5 * 1024 * 1024
+
+
+def log_event(level, action, project="", msg=""):
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    if LOG_FILE.exists() and LOG_FILE.stat().st_size > MAX_LOG_SIZE:
+        backup = LOG_FILE.with_suffix(".log.1")
+        LOG_FILE.rename(backup)
+    entry = json.dumps({
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "level": level, "source": "web", "action": action,
+        "project": project, "msg": msg,
+    })
+    with open(LOG_FILE, "a") as f:
+        f.write(entry + "\n")
+
 
 # Try to read domain/tunnel from the installed devtunnel script
 DEVTUNNEL_BIN = Path.home() / ".local" / "bin" / "devtunnel"
@@ -47,6 +72,34 @@ def get_cf_token():
 
 def get_cf_account():
     return os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+
+
+# ── Health probe helpers ───────────────────────────────────────────────────
+
+def probe_port(port, timeout=3):
+    """Probe localhost:port and return (status_code, detail_string)."""
+    try:
+        req = urllib.request.Request(f"http://localhost:{port}/", method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        return e.code, f"HTTP {e.code}"
+    except (urllib.error.URLError, OSError):
+        return 0, "connection refused"
+    except Exception:
+        return 0, "connection refused"
+
+
+def wait_for_ready_py(port, timeout=15):
+    """Poll localhost:port until healthy or timeout. Returns (ready, status_code, detail)."""
+    deadline = time.monotonic() + timeout
+    code, detail = 0, "connection refused"
+    while time.monotonic() < deadline:
+        code, detail = probe_port(port, timeout=2)
+        if 200 <= code < 400:
+            return True, code, detail
+        time.sleep(1)
+    return False, code, detail
 
 
 # ── State helpers ───────────────────────────────────────────────────────────
@@ -331,6 +384,8 @@ def create_app_service(name, directory, cmd, port):
     svc_file.write_text(f"""[Unit]
 Description=devtunnel app: {name} (port {port})
 After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -387,6 +442,37 @@ def api_status():
     locked_count = sum(1 for p in projects.values() if p.get("access") == "locked")
     ts_count = sum(1 for p in projects.values() if p.get("provider") == "tailscale")
     ts_hostname = detect_tailscale()
+    # Read healthcheck state for unhealthy projects (handle both old/new format)
+    unhealthy = []
+    health_detail = {}
+    hc_state_file = Path.home() / ".local" / "share" / "devtunnel" / "healthcheck-state.json"
+    if hc_state_file.exists():
+        try:
+            hc_data = json.loads(hc_state_file.read_text())
+            for hc_name, val in hc_data.items():
+                if isinstance(val, (int, float)):
+                    # Legacy format
+                    if val > 0:
+                        unhealthy.append(hc_name)
+                    health_detail[hc_name] = {
+                        "failures": int(val),
+                        "last_status": None,
+                        "last_check": None,
+                        "last_restart": None,
+                    }
+                elif isinstance(val, dict):
+                    failures = val.get("failures", 0)
+                    if failures > 0:
+                        unhealthy.append(hc_name)
+                    health_detail[hc_name] = {
+                        "failures": failures,
+                        "last_status": val.get("last_status"),
+                        "last_check": val.get("last_check"),
+                        "last_restart": val.get("last_restart"),
+                    }
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
     return jsonify({
         "tunnel": get_tunnel_status(),
         "domain": DOMAIN,
@@ -398,6 +484,8 @@ def api_status():
         "tailscale_available": ts_hostname is not None,
         "tailscale_hostname": ts_hostname or "",
         "ts_project_count": ts_count,
+        "unhealthy_projects": unhealthy,
+        "health_detail": health_detail,
     })
 
 
@@ -490,6 +578,7 @@ def api_add_project():
         if directory and cmd:
             create_app_service(name, directory, cmd, port)
 
+        log_event("info", "add", name, f"provider=tailscale port={port} access={ts_mode}")
         url = ts_url(ts_hostname, ts_port)
         return jsonify({"ok": True, "url": url})
 
@@ -521,6 +610,7 @@ def api_add_project():
         if directory and cmd:
             create_app_service(name, directory, cmd, port)
 
+        log_event("info", "add", name, f"provider=cloudflare port={port} access={access}")
         return jsonify({
             "ok": True,
             "url": f"https://{name}.{DOMAIN}",
@@ -560,6 +650,7 @@ def api_remove_project(name):
         rebuild_config()
         tunnel_msg = restart_tunnel()
 
+    log_event("info", "remove", name, f"provider={provider}")
     return jsonify({"ok": True, "tunnel": tunnel_msg})
 
 
@@ -594,7 +685,21 @@ def api_update_emails(name):
     proj["emails"] = emails
     write_state(state)
 
+    log_event("info", "update_emails", name, f"emails={emails}")
     return jsonify({"ok": True})
+
+
+@app.route("/api/projects/<name>/health")
+def api_project_health(name):
+    state = read_state()
+    if name not in state.get("projects", {}):
+        return jsonify({"error": f"Project '{name}' not found"}), 404
+    port = state["projects"][name].get("port")
+    if not port:
+        return jsonify({"error": "No port configured"}), 400
+    code, detail = probe_port(port)
+    healthy = 200 <= code < 400
+    return jsonify({"healthy": healthy, "status_code": code, "detail": detail})
 
 
 @app.route("/api/projects/<name>/service/<action>", methods=["POST"])
@@ -608,23 +713,42 @@ def api_service_action(name, action):
 
     proj = state["projects"][name]
 
+    port = proj.get("port", 0)
+
     # If no service exists but dir+cmd are in state, create it on first start
     if action == "start" and get_app_service_status(name) == "none":
         directory = proj.get("dir", "")
         cmd = proj.get("cmd", "")
         if directory and cmd:
-            create_app_service(name, directory, cmd, proj.get("port", 0))
-            return jsonify({"ok": True, "status": get_app_service_status(name)})
+            create_app_service(name, directory, cmd, port)
+            ready, hcode, detail = wait_for_ready_py(port, 15)
+            log_event("info", "service_start", name, f"ready={ready} {detail}")
+            return jsonify({
+                "ok": True,
+                "status": get_app_service_status(name),
+                "health": {"ready": ready, "status_code": hcode, "detail": detail},
+            })
         return jsonify({"error": "No service configured. Add --dir and --cmd to the project."}), 400
 
-    ok = control_app_service(name, action)
-    return jsonify({"ok": ok, "status": get_app_service_status(name)})
+    svc_ok = control_app_service(name, action)
+    log_event("info", f"service_{action}", name, f"ok={svc_ok}")
+
+    result = {"ok": svc_ok, "status": get_app_service_status(name)}
+
+    # Probe readiness after start/restart
+    if action in ("start", "restart") and svc_ok and port:
+        ready, hcode, detail = wait_for_ready_py(port, 15)
+        result["health"] = {"ready": ready, "status_code": hcode, "detail": detail}
+        log_event("info", f"service_{action}", name, f"ready={ready} {detail}")
+
+    return jsonify(result)
 
 
 @app.route("/api/tunnel/restart", methods=["POST"])
 def api_restart_tunnel():
     rebuild_config()
     msg = restart_tunnel()
+    log_event("info", "tunnel_restart", "", msg)
     return jsonify({"ok": True, "message": msg})
 
 
@@ -657,6 +781,95 @@ def api_logs():
         })
 
     return jsonify(entries)
+
+
+@app.route("/api/operations-log")
+def api_operations_log():
+    limit = request.args.get("limit", 100, type=int)
+    project_filter = request.args.get("project", "").strip()
+
+    if not LOG_FILE.exists():
+        return jsonify([])
+
+    lines = LOG_FILE.read_text().strip().splitlines()
+    entries = []
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if project_filter and entry.get("project") != project_filter:
+            continue
+        entries.append(entry)
+        if len(entries) >= limit:
+            break
+
+    return jsonify(entries)
+
+
+@app.route("/api/projects/<name>", methods=["PATCH"])
+def api_update_project(name):
+    data = request.json or {}
+    state = read_state()
+    if name not in state.get("projects", {}):
+        return jsonify({"error": f"Project '{name}' not found"}), 404
+
+    proj = state["projects"][name]
+    changes = []
+
+    new_cmd = data.get("cmd", "").strip()
+    new_dir = data.get("dir", "").strip()
+    new_port = data.get("port")
+
+    if not new_cmd and not new_dir and new_port is None:
+        return jsonify({"error": "At least one of cmd, dir, or port is required"}), 400
+
+    if new_cmd:
+        proj["cmd"] = new_cmd
+        changes.append(f"cmd={new_cmd}")
+    if new_dir:
+        if not Path(new_dir).is_dir():
+            return jsonify({"error": f"Directory does not exist: {new_dir}"}), 400
+        proj["dir"] = new_dir
+        changes.append(f"dir={new_dir}")
+    if new_port is not None:
+        try:
+            new_port = int(new_port)
+            if new_port < 1 or new_port > 65535:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"error": "Port must be 1-65535"}), 400
+        proj["port"] = new_port
+        changes.append(f"port={new_port}")
+
+    write_state(state)
+
+    # Recreate service if cmd+dir are both set and either changed
+    if (new_cmd or new_dir) and proj.get("cmd") and proj.get("dir"):
+        create_app_service(name, proj["dir"], proj["cmd"], proj["port"])
+        subprocess.run(
+            ["systemctl", "--user", "restart", service_name(name)],
+            capture_output=True
+        )
+        changes.append("service restarted")
+
+    # Rebuild tunnel config if port changed (CF projects)
+    if new_port is not None:
+        provider = proj.get("provider", "cloudflare")
+        if provider != "tailscale":
+            rebuild_config()
+            restart_tunnel()
+        # Recreate service if only port changed but cmd+dir exist
+        if not new_cmd and not new_dir and proj.get("cmd") and proj.get("dir"):
+            create_app_service(name, proj["dir"], proj["cmd"], proj["port"])
+            subprocess.run(
+                ["systemctl", "--user", "restart", service_name(name)],
+                capture_output=True
+            )
+            changes.append("service restarted")
+
+    log_event("info", "set", name, " ".join(changes))
+    return jsonify({"ok": True, "changes": changes})
 
 
 # ── Main ────────────────────────────────────────────────────────────────────

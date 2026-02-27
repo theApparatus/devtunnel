@@ -11,11 +11,13 @@ set -euo pipefail
 #   devtunnel add <name> <port> --funnel              Tailscale Funnel (public *.ts.net)
 #   devtunnel add <name> <port> --dir /path --cmd "npm run dev"  Auto-manage the app process
 #   devtunnel rm <name>                                Remove a project route + service
+#   devtunnel set <name> [--cmd C] [--dir D] [--port P]  Update project settings
 #   devtunnel ls                                       List active project routes
 #   devtunnel restart                                  Restart the tunnel service
 #   devtunnel restart <name>                           Restart a project's app service
 #   devtunnel stop <name>                              Stop a project's app service
-#   devtunnel logs <name>                              Tail a project's app logs
+#   devtunnel logs <name> [-f]                          Show (or tail) a project's app logs
+#   devtunnel log [N]                                  Show last N operations log entries
 #   devtunnel setup-otp                                Enable one-time PIN identity provider
 #   devtunnel status                                   Show tunnel service status
 #
@@ -52,6 +54,51 @@ NC='\033[0m'
 die() { echo -e "${RED}error:${NC} $*" >&2; exit 1; }
 info() { echo -e "${GREEN}>>>${NC} $*"; }
 warn() { echo -e "${YELLOW}>>>${NC} $*"; }
+
+# ---- Structured Logging ----
+
+LOG_DIR="$HOME/.local/share/devtunnel/logs"
+LOG_FILE="$LOG_DIR/devtunnel.log"
+MAX_LOG_SIZE=$((5 * 1024 * 1024))
+
+log_event() {
+    local level="$1" action="$2" project="${3:-}" msg="${4:-}"
+    mkdir -p "$LOG_DIR"
+    if [[ -f "$LOG_FILE" ]]; then
+        local size; size=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+        (( size > MAX_LOG_SIZE )) && mv -f "$LOG_FILE" "${LOG_FILE}.1"
+    fi
+    printf '{"ts":"%s","level":"%s","source":"cli","action":"%s","project":"%s","msg":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$level" "$action" "$project" "$msg" >> "$LOG_FILE"
+}
+
+# ---- Startup readiness helpers ----
+
+wait_for_ready() {
+    local name="$1" port="$2" timeout="${3:-15}"
+    echo -ne "${CYAN}>>>${NC} Waiting for ${name} on port ${port}..."
+    local elapsed=0
+    while (( elapsed < timeout )); do
+        local code
+        code=$(curl -so /dev/null -w '%{http_code}' --max-time 2 "http://localhost:${port}/" 2>/dev/null || echo "000")
+        if [[ "$code" =~ ^[23] ]]; then
+            echo -e " ${GREEN}ready${NC} (HTTP ${code})"
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    echo -e " ${RED}not ready${NC} (HTTP ${code:-000} after ${timeout}s)"
+    return 1
+}
+
+show_recent_journal() {
+    local name="$1"
+    local svc="$(service_name "$name")"
+    echo -e "${YELLOW}--- recent logs for ${svc} ---${NC}"
+    journalctl --user -u "$svc" --no-pager -n 5 2>/dev/null || true
+    echo -e "${YELLOW}---${NC}"
+}
 
 # Check required env vars for API operations
 check_api_env() {
@@ -131,10 +178,13 @@ create_app_service() {
 [Unit]
 Description=devtunnel app: ${name} (port ${port})
 After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=simple
 WorkingDirectory=${dir}
+ExecStartPre=-/usr/bin/fuser -k ${port}/tcp
 ExecStart=/bin/bash -c '${cmd}'
 Restart=always
 RestartSec=3
@@ -148,6 +198,14 @@ SVCEOF
     systemctl --user daemon-reload
     systemctl --user enable --now "$(service_name "$name")" 2>/dev/null
     info "App service created and started: $(service_name "$name")"
+    log_event "info" "service_create" "$name" "dir=${dir} cmd=${cmd} port=${port}"
+
+    if wait_for_ready "$name" "$port" 15; then
+        log_event "info" "service_ready" "$name" "port ${port} ready"
+    else
+        show_recent_journal "$name"
+        log_event "warn" "service_not_ready" "$name" "port ${port} not ready after 15s"
+    fi
 }
 
 remove_app_service() {
@@ -162,6 +220,7 @@ remove_app_service() {
         rm -f "$svc_file"
         systemctl --user daemon-reload
         info "App service removed"
+        log_event "info" "service_remove" "$name" "removed app service"
     fi
 }
 
@@ -333,6 +392,22 @@ ts_url() {
     fi
 }
 
+# ---- Tunnel restart helper ----
+
+restart_tunnel_service() {
+    if systemctl --user is-active cloudflared.service &>/dev/null 2>&1; then
+        systemctl --user restart cloudflared.service
+        info "Tunnel service restarted"
+        log_event "info" "tunnel_restart" "" "restarted user service"
+    elif systemctl is-active cloudflared.service &>/dev/null 2>&1; then
+        warn "Restart the tunnel: sudo systemctl restart cloudflared"
+        log_event "warn" "tunnel_restart" "" "system service requires manual restart"
+    else
+        warn "Start the tunnel: cloudflared tunnel run devbox"
+        log_event "warn" "tunnel_restart" "" "no tunnel service found"
+    fi
+}
+
 # ---- Commands ----
 
 cmd_add() {
@@ -403,6 +478,7 @@ cmd_add() {
 
         local url
         url=$(ts_url "$ts_port")
+        log_event "info" "add" "$name" "provider=tailscale port=${port} access=${access}"
         info "Added ${CYAN}${name}${NC} -> localhost:${port}"
         if [[ "$access" == "funnel" ]]; then
             info "Access: ${YELLOW}FUNNEL${NC} (public via *.ts.net)"
@@ -443,6 +519,7 @@ cmd_add() {
         # Rebuild config and restart
         rebuild_config
 
+        log_event "info" "add" "$name" "provider=cloudflare port=${port} access=${access}"
         info "Added ${CYAN}${name}.${DOMAIN}${NC} -> localhost:${port}"
         if [[ "$access" == "public" ]]; then
             info "Access: ${YELLOW}PUBLIC${NC} (no auth)"
@@ -455,15 +532,7 @@ cmd_add() {
             create_app_service "$name" "$dir" "$cmd" "$port"
         fi
 
-        # Restart tunnel if running as service
-        if systemctl --user is-active cloudflared.service &>/dev/null 2>&1; then
-            systemctl --user restart cloudflared.service
-            info "Tunnel service restarted"
-        elif systemctl is-active cloudflared.service &>/dev/null 2>&1; then
-            warn "Restart the tunnel: sudo systemctl restart cloudflared"
-        else
-            warn "Start the tunnel: cloudflared tunnel run devbox"
-        fi
+        restart_tunnel_service
 
         echo ""
         info "URL: https://${name}.${DOMAIN}"
@@ -512,17 +581,9 @@ cmd_rm() {
     else
         rebuild_config
         info "Removed ${name}.${DOMAIN}"
-
-        # Restart tunnel if running as service
-        if systemctl --user is-active cloudflared.service &>/dev/null 2>&1; then
-            systemctl --user restart cloudflared.service
-            info "Tunnel service restarted"
-        elif systemctl is-active cloudflared.service &>/dev/null 2>&1; then
-            warn "Restart the tunnel: sudo systemctl restart cloudflared"
-        else
-            warn "Restart the tunnel to apply changes"
-        fi
+        restart_tunnel_service
     fi
+    log_event "info" "remove" "$name" "provider=${proj_provider}"
 }
 
 cmd_ls() {
@@ -601,6 +662,18 @@ cmd_restart() {
         if systemctl --user is-enabled "$svc" &>/dev/null 2>&1; then
             systemctl --user restart "$svc"
             info "Restarted app service for ${name}"
+            log_event "info" "restart" "$name" "restarted app service"
+
+            local port
+            port=$(jq -r ".projects[\"$name\"].port // empty" "$STATE_FILE" 2>/dev/null || true)
+            if [[ -n "$port" ]]; then
+                if wait_for_ready "$name" "$port" 15; then
+                    log_event "info" "service_ready" "$name" "port ${port} ready after restart"
+                else
+                    show_recent_journal "$name"
+                    log_event "warn" "service_not_ready" "$name" "port ${port} not ready after restart"
+                fi
+            fi
         else
             die "No app service found for '${name}'. Add one with --dir and --cmd."
         fi
@@ -609,15 +682,7 @@ cmd_restart() {
 
     # Restart the tunnel
     rebuild_config
-    if systemctl --user is-active cloudflared.service &>/dev/null 2>&1; then
-        systemctl --user restart cloudflared.service
-        info "Tunnel service restarted (user)"
-    elif systemctl is-active cloudflared.service &>/dev/null 2>&1; then
-        sudo systemctl restart cloudflared
-        info "Tunnel service restarted (system)"
-    else
-        warn "No tunnel service found. Start manually: cloudflared tunnel run devbox"
-    fi
+    restart_tunnel_service
 }
 
 cmd_stop() {
@@ -627,16 +692,28 @@ cmd_stop() {
     if systemctl --user is-active "$svc" &>/dev/null 2>&1; then
         systemctl --user stop "$svc"
         info "Stopped app service for ${name}"
+        log_event "info" "stop" "$name" "stopped app service"
     else
         warn "App service for '${name}' is not running"
     fi
 }
 
 cmd_logs() {
-    [[ $# -ge 1 ]] || die "Usage: devtunnel logs <name>"
-    local name="$1"
+    [[ $# -ge 1 ]] || die "Usage: devtunnel logs <name> [--follow|-f]"
+    local name="$1"; shift
+    local follow=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --follow|-f) follow=true; shift ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
     local svc="$(service_name "$name")"
-    journalctl --user -u "$svc" -f --no-pager
+    if [[ "$follow" == true ]]; then
+        journalctl --user -u "$svc" -f --no-pager
+    else
+        journalctl --user -u "$svc" -n 50 --no-pager
+    fi
 }
 
 cmd_setup_otp() {
@@ -714,11 +791,13 @@ cmd_help() {
 
   GENERAL:
     devtunnel rm <name>                                Remove project + app service
+    devtunnel set <name> [--cmd C] [--dir D] [--port P]  Update project settings
     devtunnel ls                                       List projects
     devtunnel restart                                  Restart CF tunnel
     devtunnel restart <name>                           Restart a project's app
     devtunnel stop <name>                              Stop a project's app
-    devtunnel logs <name>                              Tail a project's app logs
+    devtunnel logs <name> [-f|--follow]                 Show (or tail) a project's app logs
+    devtunnel log [N]                                  Show last N operations log entries
     devtunnel status                                   Show status (CF + Tailscale)
     devtunnel setup-otp                                Enable email OTP (one time)
 
@@ -744,6 +823,233 @@ cmd_help() {
 EOF
 }
 
+cmd_set() {
+    [[ $# -ge 1 ]] || die "Usage: devtunnel set <name> [--cmd CMD] [--dir DIR] [--port PORT]"
+    local name="$1"; shift
+
+    init_state
+    local project
+    project=$(get_project "$name")
+    [[ -n "$project" ]] || die "Project '${name}' not found"
+
+    local new_cmd="" new_dir="" new_port=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --cmd)  new_cmd="$2"; shift 2 ;;
+            --dir)  new_dir="$2"; shift 2 ;;
+            --port) new_port="$2"; shift 2 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+
+    [[ -n "$new_cmd" || -n "$new_dir" || -n "$new_port" ]] || die "At least one of --cmd, --dir, or --port is required"
+
+    # Validate new port
+    if [[ -n "$new_port" ]]; then
+        [[ "$new_port" =~ ^[0-9]+$ ]] && (( new_port >= 1 && new_port <= 65535 )) || die "Port must be 1-65535"
+    fi
+
+    # Validate new dir
+    if [[ -n "$new_dir" && ! -d "$new_dir" ]]; then
+        die "Directory does not exist: $new_dir"
+    fi
+
+    local changes=""
+
+    # Update fields in state
+    if [[ -n "$new_cmd" ]]; then
+        jq --arg name "$name" --arg cmd "$new_cmd" \
+            '.projects[$name].cmd = $cmd' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        changes+="cmd=${new_cmd} "
+    fi
+    if [[ -n "$new_dir" ]]; then
+        jq --arg name "$name" --arg dir "$new_dir" \
+            '.projects[$name].dir = $dir' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        changes+="dir=${new_dir} "
+    fi
+    if [[ -n "$new_port" ]]; then
+        jq --arg name "$name" --argjson port "$new_port" \
+            '.projects[$name].port = $port' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        changes+="port=${new_port} "
+    fi
+
+    info "Updated ${name}: ${changes}"
+
+    # Re-read project after updates
+    project=$(get_project "$name")
+    local cur_cmd cur_dir cur_port
+    cur_cmd=$(echo "$project" | jq -r '.cmd // empty')
+    cur_dir=$(echo "$project" | jq -r '.dir // empty')
+    cur_port=$(echo "$project" | jq -r '.port')
+
+    # If cmd or dir changed and both are set, recreate systemd unit + restart
+    if [[ (-n "$new_cmd" || -n "$new_dir") && -n "$cur_cmd" && -n "$cur_dir" ]]; then
+        create_app_service "$name" "$cur_dir" "$cur_cmd" "$cur_port"
+        info "App service recreated and restarted"
+    fi
+
+    # If port changed, also rebuild tunnel config and restart (for CF projects)
+    if [[ -n "$new_port" ]]; then
+        local proj_provider
+        proj_provider=$(echo "$project" | jq -r '.provider // "cloudflare"')
+        if [[ "$proj_provider" != "tailscale" ]]; then
+            rebuild_config
+            restart_tunnel_service
+        fi
+        # Recreate service if cmd+dir are set (port changed in env)
+        if [[ -z "$new_cmd" && -z "$new_dir" && -n "$cur_cmd" && -n "$cur_dir" ]]; then
+            create_app_service "$name" "$cur_dir" "$cur_cmd" "$cur_port"
+            info "App service recreated with new port"
+        fi
+    fi
+
+    log_event "info" "set" "$name" "${changes}"
+}
+
+cmd_log() {
+    local n="${1:-50}"
+    if [[ ! -f "$LOG_FILE" ]]; then
+        echo "No log entries yet."
+        return
+    fi
+    tail -n "$n" "$LOG_FILE" | while IFS= read -r line; do
+        local level action project msg ts
+        level=$(echo "$line" | jq -r '.level // empty' 2>/dev/null) || continue
+        action=$(echo "$line" | jq -r '.action // empty' 2>/dev/null)
+        project=$(echo "$line" | jq -r '.project // empty' 2>/dev/null)
+        msg=$(echo "$line" | jq -r '.msg // empty' 2>/dev/null)
+        ts=$(echo "$line" | jq -r '.ts // empty' 2>/dev/null)
+        local source_field
+        source_field=$(echo "$line" | jq -r '.source // empty' 2>/dev/null)
+        local color="$NC"
+        case "$level" in
+            error) color="$RED" ;;
+            warn)  color="$YELLOW" ;;
+            info)  color="$GREEN" ;;
+        esac
+        printf "${color}%-5s${NC} %-20s %-8s %-14s %-18s %s\n" "$level" "$ts" "$source_field" "$action" "$project" "$msg"
+    done
+}
+
+cmd_healthcheck() {
+    local state_dir="$HOME/.local/share/devtunnel"
+    local hc_state="$state_dir/healthcheck-state.json"
+    mkdir -p "$state_dir"
+
+    # Initialize healthcheck state if missing
+    if [[ ! -f "$hc_state" ]]; then
+        echo '{}' > "$hc_state"
+    fi
+
+    # Check cloudflared service
+    if ! systemctl --user is-active cloudflared.service &>/dev/null 2>&1; then
+        log_event "warn" "healthcheck" "" "cloudflared not running, restarting"
+        systemctl --user restart cloudflared.service 2>/dev/null || true
+        log_event "info" "healthcheck" "" "cloudflared restart attempted"
+    fi
+
+    init_state
+
+    local now
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Check each project with a running app service
+    local names
+    names=$(jq -r '.projects | keys[]' "$STATE_FILE" 2>/dev/null || true)
+    local hc_data
+    hc_data=$(cat "$hc_state")
+
+    for name in $names; do
+        local svc_status
+        svc_status=$(get_app_service_status "$name")
+        if [[ "$svc_status" != "running" ]]; then
+            continue
+        fi
+
+        local port
+        port=$(jq -r ".projects[\"$name\"].port" "$STATE_FILE")
+
+        # Probe the port with HTTP status capture
+        local http_code
+        http_code=$(curl -so /dev/null -w '%{http_code}' --max-time 3 "http://localhost:${port}/" 2>/dev/null || echo "000")
+
+        # Read existing entry (handle both legacy number and new object format)
+        local prev_entry prev_failures prev_last_restart
+        prev_entry=$(echo "$hc_data" | jq -r --arg name "$name" '.[$name] // empty')
+        if [[ -z "$prev_entry" || "$prev_entry" == "null" ]]; then
+            prev_failures=0
+            prev_last_restart="null"
+        elif echo "$prev_entry" | jq -e 'type == "number"' &>/dev/null; then
+            # Legacy format: plain number
+            prev_failures="$prev_entry"
+            prev_last_restart="null"
+        else
+            prev_failures=$(echo "$prev_entry" | jq -r '.failures // 0')
+            prev_last_restart=$(echo "$prev_entry" | jq -r '.last_restart // "null"')
+        fi
+
+        local status_desc
+        if [[ "$http_code" == "000" ]]; then
+            status_desc="connection refused"
+        else
+            status_desc="HTTP ${http_code}"
+        fi
+
+        if [[ "$http_code" =~ ^[23] ]]; then
+            # Healthy — reset failures
+            hc_data=$(echo "$hc_data" | jq --arg name "$name" --arg status "$status_desc" --arg ts "$now" \
+                '.[$name] = {failures: 0, last_status: $status, last_check: $ts, last_restart: null}')
+        else
+            # Failed — increment counter
+            local new_count=$((prev_failures + 1))
+
+            log_event "warn" "healthcheck" "$name" "port ${port} ${status_desc} (${new_count} consecutive)"
+
+            local should_restart=false
+            if (( new_count >= 2 )); then
+                # Backoff: skip restart if last restart was <5 minutes ago
+                if [[ "$prev_last_restart" != "null" && -n "$prev_last_restart" ]]; then
+                    local last_epoch now_epoch
+                    last_epoch=$(date -d "$prev_last_restart" +%s 2>/dev/null || echo 0)
+                    now_epoch=$(date -u +%s)
+                    if (( now_epoch - last_epoch < 300 )); then
+                        log_event "warn" "healthcheck" "$name" "skipping restart, last restart was <5m ago"
+                    else
+                        should_restart=true
+                    fi
+                else
+                    should_restart=true
+                fi
+            fi
+
+            if [[ "$should_restart" == true ]]; then
+                log_event "warn" "healthcheck" "$name" "restarting after ${new_count} failures (${status_desc})"
+                local svc="$(service_name "$name")"
+                systemctl --user restart "$svc" 2>/dev/null || true
+
+                # Check readiness after restart (10s timeout)
+                if wait_for_ready "$name" "$port" 10; then
+                    log_event "info" "healthcheck" "$name" "service restarted and ready"
+                    status_desc="healthy after restart"
+                    new_count=0
+                else
+                    log_event "warn" "healthcheck" "$name" "service restarted but not ready"
+                fi
+
+                hc_data=$(echo "$hc_data" | jq --arg name "$name" --argjson c "$new_count" \
+                    --arg status "$status_desc" --arg ts "$now" \
+                    '.[$name] = {failures: $c, last_status: $status, last_check: $ts, last_restart: $ts}')
+            else
+                hc_data=$(echo "$hc_data" | jq --arg name "$name" --argjson c "$new_count" \
+                    --arg status "$status_desc" --arg ts "$now" --arg lr "$prev_last_restart" \
+                    '.[$name] = {failures: $c, last_status: $status, last_check: $ts, last_restart: (if $lr == "null" then null else $lr end)}')
+            fi
+        fi
+    done
+
+    echo "$hc_data" > "$hc_state"
+}
+
 cmd_web() {
     local port="${1:-7000}"
     local script_dir
@@ -764,12 +1070,15 @@ cmd_web() {
 case "${1:-help}" in
     add)      shift; cmd_add "$@" ;;
     rm)       shift; cmd_rm "$@" ;;
+    set)      shift; cmd_set "$@" ;;
     ls)       cmd_ls ;;
     restart)  shift; cmd_restart "$@" ;;
     stop)     shift; cmd_stop "$@" ;;
     logs)     shift; cmd_logs "$@" ;;
+    log)      shift; cmd_log "$@" ;;
     status)   cmd_status ;;
     setup-otp) cmd_setup_otp ;;
+    healthcheck) cmd_healthcheck ;;
     web)      shift; cmd_web "$@" ;;
     help|-h|--help) cmd_help ;;
     *) die "Unknown command: $1. Run 'devtunnel help' for usage." ;;

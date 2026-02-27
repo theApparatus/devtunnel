@@ -164,11 +164,15 @@ info "Tunnel config written to ~/.cloudflared/config.yml"
 
 # Step 8: Systemd services
 mkdir -p "$HOME/.config/systemd/user"
+mkdir -p "$HOME/.local/share/devtunnel/logs"
 cp "${SCRIPT_DIR}/systemd/cloudflared.service" "$HOME/.config/systemd/user/"
 cp "${SCRIPT_DIR}/systemd/devtunnel-web.service" "$HOME/.config/systemd/user/"
+cp "${SCRIPT_DIR}/systemd/devtunnel-healthcheck.service" "$HOME/.config/systemd/user/"
+cp "${SCRIPT_DIR}/systemd/devtunnel-healthcheck.timer" "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
 systemctl --user enable --now cloudflared.service
 systemctl --user enable --now devtunnel-web.service
+systemctl --user enable --now devtunnel-healthcheck.timer
 
 # Enable linger
 sudo loginctl enable-linger "$USER" 2>/dev/null || warn "Could not enable linger (tunnel won't survive logout without it)"
