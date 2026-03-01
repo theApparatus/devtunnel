@@ -1,0 +1,22 @@
+# frps single-port config for Fly.io
+#
+# bindPort and vhostHTTPPort share port 8080. frps multiplexes
+# frpc tunnel connections (WebSocket on /~!frp) and HTTP vhost
+# routing on the same port automatically.
+#
+# frpc clients MUST use: transport.protocol = "websocket"
+# and connect to the app hostname on port 443 (Fly TLS -> 8080).
+
+bindAddr = "0.0.0.0"
+bindPort = 8080
+vhostHTTPPort = 8080
+
+subDomainHost = "app.fixshifted.com"
+
+auth.method = "token"
+auth.token = "{{ .Envs.FRP_AUTH_TOKEN }}"
+
+transport.tcpMux = true
+
+log.to = "console"
+log.level = "info"
