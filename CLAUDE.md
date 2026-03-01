@@ -1,4 +1,6 @@
-# CLAUDE.md — devtunnel project guide
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What This Is
 
@@ -7,9 +9,11 @@ devtunnel is a CLI + web UI tool for exposing local dev projects via Cloudflare 
 ## Project Structure
 
 ```
-bin/devtunnel                          Bash CLI (single file, ~1100 lines)
-web/app.py                             Flask web UI backend
-web/templates/index.html               Single-page web UI (vanilla JS)
+bin/devtunnel                          Bash CLI (single file, ~1200 lines)
+web/app.py                             Flask web UI backend (~850 lines)
+web/templates/index.html               Single-page web UI (vanilla JS, ~1100 lines)
+gate/gate.py                           Auth gate proxy (~600 lines)
+fly/                                   FRP server deployment on Fly.io (Dockerfile, fly.toml, frps.toml)
 systemd/cloudflared.service            Cloudflare tunnel systemd unit
 systemd/devtunnel-web.service          Web UI systemd unit
 systemd/devtunnel-healthcheck.service  Health check runner (oneshot)
@@ -17,13 +21,17 @@ systemd/devtunnel-healthcheck.timer    60s health check timer
 install.sh                             Interactive installer
 ```
 
+### FRP Server (`fly/`)
+
+FRP server deployment config for Fly.io (`frps-fixshifted` app). The `frps` binary handles public routing via `*.app.fixshifted.com`. Deployed with `fly deploy` from the `fly/` directory.
+
 ### MCP Plugin (out-of-tree)
 
 The MCP plugin lives at `~/.claude/plugins/cache/devtunnel-local/devtunnel/1.0.0/server/src/index.ts`. It exposes devtunnel functionality as MCP tools. Most tools delegate to the CLI via `cli()` helper; keep it that way so logging and auto-restart behavior stay consistent.
 
-### Auth Gate (out-of-tree)
+### Auth Gate (`gate/gate.py`)
 
-`~/.local/share/devtunnel/gate/gate.py` — cookie-based auth proxy for locked projects. Runs on port 7500 as a systemd service (`devtunnel-gate`). Sits between FRP (on Fly.io) and apps:
+Cookie-based auth proxy for locked projects. Deployed to `~/.local/share/devtunnel/gate/gate.py`. Runs on port 7500 as a systemd service (`devtunnel-gate`). Sits between FRP (on Fly.io) and apps:
 
 ```
 visitor → *.app.fixshifted.com → Fly.io (frps) → gate.py:7500 → app:PORT
@@ -134,3 +142,4 @@ python3 -m py_compile web/app.py         # check web syntax
 - All jq operations on the state file must preserve top-level keys like `cookie_secret` (use targeted paths, not full rewrites)
 - gate.py is the auth enforcement layer — CLI/web manage codes but gate.py validates them at request time
 - Locked projects need `auth_user`, `auth_pass`, and `invite_codes` in state for gate.py to work
+- README.md is stale — references `~/.cloudflared/devtunnel.json` and Cloudflare-only architecture; actual state file is `~/.config/devtunnel/state.json` and routing uses FRP on Fly.io
