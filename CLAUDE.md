@@ -2,12 +2,12 @@
 
 ## What This Is
 
-devtunnel is a CLI + web UI tool for exposing local dev projects via Cloudflare Tunnel or Tailscale. It manages tunnel routes, Cloudflare Access policies, systemd app services, structured logging, and health checks.
+devtunnel is a CLI + web UI tool for exposing local dev projects via Cloudflare Tunnel or Tailscale. It manages tunnel routes, auth gate with invite codes, systemd app services, structured logging, and health checks.
 
 ## Project Structure
 
 ```
-bin/devtunnel                          Bash CLI (single file, ~900 lines)
+bin/devtunnel                          Bash CLI (single file, ~1100 lines)
 web/app.py                             Flask web UI backend
 web/templates/index.html               Single-page web UI (vanilla JS)
 systemd/cloudflared.service            Cloudflare tunnel systemd unit
@@ -21,14 +21,66 @@ install.sh                             Interactive installer
 
 The MCP plugin lives at `~/.claude/plugins/cache/devtunnel-local/devtunnel/1.0.0/server/src/index.ts`. It exposes devtunnel functionality as MCP tools. Most tools delegate to the CLI via `cli()` helper; keep it that way so logging and auto-restart behavior stay consistent.
 
+### Auth Gate (out-of-tree)
+
+`~/.local/share/devtunnel/gate/gate.py` — cookie-based auth proxy for locked projects. Runs on port 7500 as a systemd service (`devtunnel-gate`). Sits between FRP (on Fly.io) and apps:
+
+```
+visitor → *.app.fixshifted.com → Fly.io (frps) → gate.py:7500 → app:PORT
+```
+
+gate.py reads from the shared state file and enforces auth via:
+- Password login (`auth_user` / `auth_pass` per project)
+- Invite codes (`invite_codes` array, supports `?invite=CODE` URL param)
+- Cookie sessions (signed with `cookie_secret`, 30-day expiry)
+
 ## Key State Files (runtime, not in repo)
 
-- `~/.cloudflared/devtunnel.json` — project state (ports, access, provider, dir, cmd, app IDs)
-- `~/.cloudflared/config.yml` — generated cloudflared ingress config
+- `~/.config/devtunnel/state.json` — **single shared state file** for CLI, web app, gate.py, and MCP plugin. Contains projects (ports, access, auth credentials, invite codes, dir, cmd) and `cookie_secret`.
+- `~/.cloudflared/config.yml` — generated cloudflared ingress config (for DNS routing only)
 - `~/.local/share/devtunnel/logs/devtunnel.log` — JSONL operations log (5MB rotation)
 - `~/.local/share/devtunnel/healthcheck-state.json` — per-project failure counters
+- `~/.config/devtunnel/auth_events.db` — SQLite auth event log (managed by gate.py)
 
 ## Architecture Patterns
+
+### State File (`~/.config/devtunnel/state.json`)
+
+All components share this single file. Structure:
+```json
+{
+  "projects": {
+    "myapp": {
+      "port": 3000,
+      "access": "locked",
+      "provider": "cloudflare",
+      "auth_user": "myapp",
+      "auth_pass": "salt:sha256hash",
+      "invite_codes": [
+        {"code": "ABC123", "email": "user@example.com", "expires_at": null, "max_uses": 5, "uses": 0}
+      ],
+      "dir": "/home/dev/projects/myapp",
+      "cmd": "npm run dev"
+    }
+  },
+  "cookie_secret": "hex-string"
+}
+```
+
+- `auth_user`/`auth_pass` — only for locked projects, generated on `devtunnel add --locked`
+- `invite_codes` — array of invite code objects, managed by `devtunnel codes` CLI or web API
+- `cookie_secret` — top-level, auto-generated on first init, used by gate.py for session signing
+- Public projects omit `auth_user`, `auth_pass`, and `invite_codes`
+
+### Invite Codes Schema
+
+Each code: `{code, email, expires_at, max_uses, uses}`
+- `email` — null for anonymous codes (gate.py ignores this, tracked for admin reference)
+- `max_uses` — null means unlimited
+- `expires_at` — null means never expires, ISO 8601 string otherwise
+- `uses` — incremented by gate.py on each successful use
+- CLI subcommands: `devtunnel codes <project> [add|edit|rm]`
+- Web API: GET/POST on `/api/projects/<name>/codes`, PATCH/DELETE on `/api/projects/<name>/codes/<code>`
 
 ### CLI (`bin/devtunnel`)
 - Bash script, `set -euo pipefail`
@@ -37,13 +89,15 @@ The MCP plugin lives at `~/.claude/plugins/cache/devtunnel-local/devtunnel/1.0.0
 - App services are systemd user units created from a template in `create_app_service()`
 - `log_event level action [project] [msg]` writes JSONL to the shared log file
 - `restart_tunnel_service()` is the single place that restarts cloudflared — all mutation commands call it
+- `init_state()` ensures state dir exists, creates state file with `cookie_secret` if missing
 
 ### Web UI (`web/app.py`)
 - Flask, no external dependencies beyond Flask
-- Same state file as CLI — reads/writes `~/.cloudflared/devtunnel.json`
+- Same state file as CLI — reads/writes `~/.config/devtunnel/state.json`
 - `log_event(level, action, project, msg)` — Python equivalent of CLI logging
-- API endpoints mirror CLI commands: POST add, DELETE remove, PATCH update, service control
+- API endpoints mirror CLI commands: POST add, DELETE remove, PATCH update, service control, codes CRUD
 - Template is a single HTML file with inline CSS and vanilla JS (no build step)
+- Binds to `0.0.0.0:7000` (accessible via Tailscale tailnet)
 
 ### Health Checks
 - `devtunnel healthcheck` is a CLI command (not in help text, meant for the timer)
@@ -76,3 +130,7 @@ python3 -m py_compile web/app.py         # check web syntax
 - MCP tools should delegate to the CLI (`cli(["command", ...args])`) rather than manipulating state directly
 - App service systemd templates must include `StartLimitIntervalSec` and `StartLimitBurst` in the `[Unit]` section
 - cloudflared does NOT support SIGHUP — config changes require a full service restart
+- Cloudflare is only used for DNS tunneling — no CF Access API calls
+- All jq operations on the state file must preserve top-level keys like `cookie_secret` (use targeted paths, not full rewrites)
+- gate.py is the auth enforcement layer — CLI/web manage codes but gate.py validates them at request time
+- Locked projects need `auth_user`, `auth_pass`, and `invite_codes` in state for gate.py to work

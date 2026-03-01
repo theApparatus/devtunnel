@@ -13,6 +13,7 @@ Usage:
 import json
 import os
 import re
+import secrets
 import subprocess
 import time
 import urllib.request
@@ -20,18 +21,36 @@ import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, session, abort
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("DEVTUNNEL_SECRET_KEY", secrets.token_hex(32))
+
+
+# ── CSRF Protection ────────────────────────────────────────────────────────
+
+@app.before_request
+def csrf_protect():
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        token = request.headers.get("X-CSRF-Token") or (request.json or {}).get("_csrf_token")
+        if not token or token != session.get("csrf_token"):
+            abort(403, description="Invalid or missing CSRF token")
+
+
+@app.route("/api/csrf-token")
+def api_csrf_token():
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_hex(32)
+    return jsonify({"token": session["csrf_token"]})
+
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
 DOMAIN = os.environ.get("DEVTUNNEL_DOMAIN", "")
 TUNNEL_ID = os.environ.get("DEVTUNNEL_TUNNEL_ID", "")
 CONFIG_DIR = Path.home() / ".cloudflared"
-STATE_FILE = CONFIG_DIR / "devtunnel.json"
+STATE_FILE = Path.home() / ".config" / "devtunnel" / "state.json"
 TUNNEL_CONFIG = CONFIG_DIR / "config.yml"
-CF_API = "https://api.cloudflare.com/client/v4"
 SERVICE_PREFIX = "devtunnel-app"
 
 # ── Structured Logging ─────────────────────────────────────────────────────
@@ -64,14 +83,6 @@ if (not DOMAIN or not TUNNEL_ID) and DEVTUNNEL_BIN.exists():
             DOMAIN = line.split("=", 1)[1].strip().strip('"')
         if line.startswith("TUNNEL_ID=") and not TUNNEL_ID:
             TUNNEL_ID = line.split("=", 1)[1].strip().strip('"')
-
-
-def get_cf_token():
-    return os.environ.get("CLOUDFLARE_API_TOKEN", "")
-
-
-def get_cf_account():
-    return os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
 
 
 # ── Health probe helpers ───────────────────────────────────────────────────
@@ -112,99 +123,10 @@ def read_state():
 
 
 def write_state(state):
-    with open(STATE_FILE, "w") as f:
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(STATE_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(state, f, indent=2)
-
-
-# ── Cloudflare API helpers ──────────────────────────────────────────────────
-
-def cf_api(method, path, data=None):
-    import urllib.request
-    import urllib.error
-
-    url = f"{CF_API}{path}"
-    body = json.dumps(data).encode() if data else None
-    req = urllib.request.Request(url, data=body, method=method)
-    req.add_header("Authorization", f"Bearer {get_cf_token()}")
-    req.add_header("Content-Type", "application/json")
-
-    try:
-        with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        body = e.read().decode()
-        try:
-            return json.loads(body)
-        except json.JSONDecodeError:
-            return {"success": False, "errors": [{"message": body}]}
-
-
-def create_access_app(name, emails):
-    hostname = f"{name}.{DOMAIN}"
-    account = get_cf_account()
-
-    app_result = cf_api("POST", f"/accounts/{account}/access/apps", {
-        "name": f"devbox-{name}",
-        "domain": hostname,
-        "type": "self_hosted",
-        "session_duration": "24h",
-        "self_hosted_domains": [hostname],
-        "app_launcher_visible": True,
-        "skip_interstitial": True,
-    })
-
-    app_id = (app_result.get("result") or {}).get("id")
-    if not app_id:
-        err = (app_result.get("errors") or [{}])[0].get("message", "unknown error")
-        return None, f"Failed to create Access app: {err}"
-
-    include_rules = [{"email": {"email": e.strip()}} for e in emails.split(",") if e.strip()]
-
-    cf_api("POST", f"/accounts/{account}/access/apps/{app_id}/policies", {
-        "name": "Allow invited emails",
-        "decision": "allow",
-        "precedence": 1,
-        "include": include_rules,
-        "require": [],
-        "exclude": [],
-    })
-
-    return app_id, None
-
-
-def delete_access_app(app_id):
-    account = get_cf_account()
-    cf_api("DELETE", f"/accounts/{account}/access/apps/{app_id}")
-
-
-def get_access_app_policies(app_id):
-    account = get_cf_account()
-    result = cf_api("GET", f"/accounts/{account}/access/apps/{app_id}/policies")
-    if result.get("success"):
-        return result.get("result", [])
-    return []
-
-
-def update_access_policy_emails(app_id, policy_id, emails):
-    account = get_cf_account()
-    include_rules = [{"email": {"email": e.strip()}} for e in emails.split(",") if e.strip()]
-    result = cf_api("PUT", f"/accounts/{account}/access/apps/{app_id}/policies/{policy_id}", {
-        "name": "Allow invited emails",
-        "decision": "allow",
-        "precedence": 1,
-        "include": include_rules,
-        "require": [],
-        "exclude": [],
-    })
-    return result.get("success", False)
-
-
-def get_access_logs(limit=50):
-    account = get_cf_account()
-    result = cf_api("GET", f"/accounts/{account}/access/logs/access_requests?limit={limit}&direction=desc")
-    if result.get("success"):
-        return result.get("result", [])
-    return []
 
 
 # ── Config rebuild ──────────────────────────────────────────────────────────
@@ -381,6 +303,8 @@ def get_app_service_status(name):
 def create_app_service(name, directory, cmd, port):
     SYSTEMD_USER_DIR.mkdir(parents=True, exist_ok=True)
     svc_file = SYSTEMD_USER_DIR / service_name(name)
+    # Escape single quotes for safe interpolation into ExecStart='...'
+    safe_cmd = cmd.replace("'", "'\\''")
     svc_file.write_text(f"""[Unit]
 Description=devtunnel app: {name} (port {port})
 After=network-online.target
@@ -390,7 +314,7 @@ StartLimitBurst=10
 [Service]
 Type=simple
 WorkingDirectory={directory}
-ExecStart=/bin/bash -c '{cmd}'
+ExecStart=/bin/bash -c '{safe_cmd}'
 Restart=always
 RestartSec=3
 Environment=PORT={port}
@@ -439,7 +363,7 @@ def api_status():
     state = read_state()
     projects = state.get("projects", {})
     project_count = len(projects)
-    locked_count = sum(1 for p in projects.values() if p.get("access") == "locked")
+    code_count = sum(len(p.get("invite_codes", [])) for p in projects.values())
     ts_count = sum(1 for p in projects.values() if p.get("provider") == "tailscale")
     ts_hostname = detect_tailscale()
     # Read healthcheck state for unhealthy projects (handle both old/new format)
@@ -477,10 +401,8 @@ def api_status():
         "tunnel": get_tunnel_status(),
         "domain": DOMAIN,
         "tunnel_id": TUNNEL_ID,
-        "has_api_token": bool(get_cf_token()),
-        "has_account_id": bool(get_cf_account()),
         "project_count": project_count,
-        "locked_count": locked_count,
+        "code_count": code_count,
         "tailscale_available": ts_hostname is not None,
         "tailscale_hostname": ts_hostname or "",
         "ts_project_count": ts_count,
@@ -505,8 +427,7 @@ def api_projects():
             "port": proj.get("port"),
             "provider": provider,
             "access": proj.get("access", "public"),
-            "emails": proj.get("emails", ""),
-            "access_app_id": proj.get("access_app_id", ""),
+            "code_count": len(proj.get("invite_codes", [])),
             "ts_port": proj.get("ts_port", ""),
             "url": url,
             "dir": proj.get("dir", ""),
@@ -524,7 +445,6 @@ def api_add_project():
     provider = data.get("provider", "cloudflare")
     access = data.get("access", "public")
     ts_mode = data.get("ts_mode", "serve")  # serve or funnel
-    emails = data.get("emails", "").strip()
     directory = data.get("dir", "").strip()
     cmd = data.get("cmd", "").strip()
 
@@ -584,25 +504,25 @@ def api_add_project():
 
     else:
         # Cloudflare path
-        access_app_id = ""
-        if access == "locked":
-            if not emails:
-                return jsonify({"error": "Locked access requires at least one email"}), 400
-            if not get_cf_token() or not get_cf_account():
-                return jsonify({"error": "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set for locked projects"}), 400
-            access_app_id, err = create_access_app(name, emails)
-            if err:
-                return jsonify({"error": err}), 500
-
-        state.setdefault("projects", {})[name] = {
+        proj_data = {
             "port": port,
             "provider": "cloudflare",
             "access": access,
-            "emails": emails,
-            "access_app_id": access_app_id or "",
             "dir": directory,
             "cmd": cmd,
         }
+        if access == "locked":
+            import hashlib
+            salt = secrets.token_hex(16)
+            password = secrets.token_hex(16)
+            pw_hash = hashlib.sha256((salt + password).encode()).hexdigest()
+            proj_data["auth_user"] = name
+            proj_data["auth_pass"] = f"{salt}:{pw_hash}"
+            proj_data["invite_codes"] = []
+            # Ensure cookie_secret exists
+            if "cookie_secret" not in state:
+                state["cookie_secret"] = secrets.token_hex(32)
+        state.setdefault("projects", {})[name] = proj_data
         write_state(state)
         rebuild_config()
         tunnel_msg = restart_tunnel()
@@ -632,12 +552,6 @@ def api_remove_project(name):
         ts_access = proj.get("access", "serve")
         if ts_port:
             ts_remove(ts_port, ts_access)
-    else:
-        app_id = proj.get("access_app_id")
-        if app_id:
-            if not get_cf_token() or not get_cf_account():
-                return jsonify({"error": "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID needed to delete Access app"}), 400
-            delete_access_app(app_id)
 
     # Remove app service if it exists
     remove_app_service(name)
@@ -652,41 +566,6 @@ def api_remove_project(name):
 
     log_event("info", "remove", name, f"provider={provider}")
     return jsonify({"ok": True, "tunnel": tunnel_msg})
-
-
-@app.route("/api/projects/<name>/emails", methods=["PUT"])
-def api_update_emails(name):
-    data = request.json or {}
-    emails = data.get("emails", "").strip()
-
-    state = read_state()
-    if name not in state.get("projects", {}):
-        return jsonify({"error": f"Project '{name}' not found"}), 404
-
-    proj = state["projects"][name]
-    if proj.get("provider", "cloudflare") == "tailscale":
-        return jsonify({"error": "Email access control is not supported with Tailscale"}), 400
-    if proj.get("access") != "locked":
-        return jsonify({"error": "Project is not locked — change access type first"}), 400
-
-    app_id = proj.get("access_app_id")
-    if not app_id:
-        return jsonify({"error": "No Access app found for this project"}), 400
-
-    if not get_cf_token() or not get_cf_account():
-        return jsonify({"error": "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID required"}), 400
-
-    policies = get_access_app_policies(app_id)
-    if policies:
-        policy_id = policies[0].get("id")
-        if policy_id:
-            update_access_policy_emails(app_id, policy_id, emails)
-
-    proj["emails"] = emails
-    write_state(state)
-
-    log_event("info", "update_emails", name, f"emails={emails}")
-    return jsonify({"ok": True})
 
 
 @app.route("/api/projects/<name>/health")
@@ -752,37 +631,6 @@ def api_restart_tunnel():
     return jsonify({"ok": True, "message": msg})
 
 
-@app.route("/api/logs")
-def api_logs():
-    if not get_cf_token() or not get_cf_account():
-        return jsonify({"error": "API credentials not configured"}), 400
-
-    limit = request.args.get("limit", 50, type=int)
-    logs = get_access_logs(limit=min(limit, 100))
-
-    # Map to our domain's projects
-    state = read_state()
-    project_domains = {f"{n}.{DOMAIN}": n for n in state.get("projects", {})}
-
-    entries = []
-    for log in logs:
-        domain = log.get("app_domain", "")
-        project_name = project_domains.get(domain, "")
-        entries.append({
-            "email": log.get("user_email", ""),
-            "action": log.get("action", ""),
-            "allowed": log.get("allowed", False),
-            "domain": domain,
-            "project": project_name,
-            "ip": log.get("ip_address", ""),
-            "connection": log.get("connection", ""),
-            "created_at": log.get("created_at", ""),
-            "ray_id": log.get("ray_id", ""),
-        })
-
-    return jsonify(entries)
-
-
 @app.route("/api/operations-log")
 def api_operations_log():
     limit = request.args.get("limit", 100, type=int)
@@ -805,6 +653,131 @@ def api_operations_log():
             break
 
     return jsonify(entries)
+
+
+# ── Code management endpoints ─────────────────────────────────────────────
+
+def compute_code_status(code_entry):
+    """Compute status for a code entry: active, exhausted, or expired."""
+    max_uses = code_entry.get("max_uses")
+    uses = code_entry.get("uses", 0)
+    expires_at = code_entry.get("expires_at")
+
+    if expires_at:
+        try:
+            exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) >= exp_dt:
+                return "expired"
+        except (ValueError, AttributeError):
+            pass
+
+    if max_uses is not None and max_uses > 0 and uses >= max_uses:
+        return "exhausted"
+
+    return "active"
+
+
+@app.route("/api/projects/<name>/codes")
+def api_list_codes(name):
+    state = read_state()
+    if name not in state.get("projects", {}):
+        return jsonify({"error": f"Project '{name}' not found"}), 404
+
+    codes = state["projects"][name].get("invite_codes", [])
+    result = []
+    for c in codes:
+        entry = dict(c)
+        entry["status"] = compute_code_status(c)
+        result.append(entry)
+    return jsonify(result)
+
+
+@app.route("/api/projects/<name>/codes", methods=["POST"])
+def api_add_code(name):
+    state = read_state()
+    if name not in state.get("projects", {}):
+        return jsonify({"error": f"Project '{name}' not found"}), 404
+
+    data = request.json or {}
+    no_email = data.get("no_email", False)
+    email = data.get("email", "").strip() if not no_email else None
+    max_uses = data.get("max_uses")
+    if max_uses is not None:
+        max_uses = int(max_uses)
+    expires_at = data.get("expires_at", "").strip() or None
+
+    if not no_email and not email:
+        return jsonify({"error": "Email is required (or set no_email: true)"}), 400
+
+    code = secrets.token_hex(6).upper()
+
+    proj = state["projects"][name]
+    if "invite_codes" not in proj:
+        proj["invite_codes"] = []
+
+    proj["invite_codes"].append({
+        "code": code,
+        "email": email,
+        "expires_at": expires_at,
+        "max_uses": max_uses,
+        "uses": 0,
+    })
+    write_state(state)
+
+    log_event("info", "code_add", name, f"code={code[:8]}... email={email or 'anonymous'}")
+    return jsonify({"ok": True, "code": code})
+
+
+@app.route("/api/projects/<name>/codes/<code>", methods=["PATCH"])
+def api_edit_code(name, code):
+    state = read_state()
+    if name not in state.get("projects", {}):
+        return jsonify({"error": f"Project '{name}' not found"}), 404
+
+    codes = state["projects"][name].get("invite_codes", [])
+    matches = [c for c in codes if c["code"].startswith(code)]
+
+    if len(matches) == 0:
+        return jsonify({"error": f"No code matching prefix '{code}'"}), 404
+    if len(matches) > 1:
+        return jsonify({"error": f"Multiple codes match prefix '{code}'. Use a longer prefix."}), 400
+
+    data = request.json or {}
+    entry = matches[0]
+
+    if "email" in data:
+        entry["email"] = data["email"].strip() or None
+    if "max_uses" in data:
+        entry["max_uses"] = int(data["max_uses"]) if data["max_uses"] is not None else None
+    if "expires_at" in data:
+        entry["expires_at"] = data["expires_at"].strip() or None
+    if data.get("reset_uses"):
+        entry["uses"] = 0
+
+    write_state(state)
+    log_event("info", "code_edit", name, f"prefix={code[:8]}")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/projects/<name>/codes/<code>", methods=["DELETE"])
+def api_delete_code(name, code):
+    state = read_state()
+    if name not in state.get("projects", {}):
+        return jsonify({"error": f"Project '{name}' not found"}), 404
+
+    codes = state["projects"][name].get("invite_codes", [])
+    matches = [c for c in codes if c["code"].startswith(code)]
+
+    if len(matches) == 0:
+        return jsonify({"error": f"No code matching prefix '{code}'"}), 404
+    if len(matches) > 1:
+        return jsonify({"error": f"Multiple codes match prefix '{code}'. Use a longer prefix."}), 400
+
+    state["projects"][name]["invite_codes"] = [c for c in codes if not c["code"].startswith(code)]
+    write_state(state)
+
+    log_event("info", "code_rm", name, f"prefix={code[:8]}")
+    return jsonify({"ok": True})
 
 
 @app.route("/api/projects/<name>", methods=["PATCH"])

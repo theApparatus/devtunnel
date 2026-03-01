@@ -1,6 +1,6 @@
 # devtunnel
 
-Expose local dev projects to the internet via Cloudflare Tunnel or Tailscale with optional access control, structured logging, and self-healing health checks. One command to share a project publicly or lock it down to specific people via email OTP.
+Expose local dev projects to the internet via Cloudflare Tunnel or Tailscale with optional access control, structured logging, and self-healing health checks. One command to share a project publicly or lock it down with access codes.
 
 Built for devs who need to show work-in-progress to clients, friends, or teammates without deploying to a staging environment.
 
@@ -15,27 +15,37 @@ your dev box                    cloudflare edge                    visitor
 └──────────────┘               └──────────────────┘              └──────────┘
                                        │
                                 ┌──────┴───────┐
-                                │ Access Policy │
+                                │ Access Mode   │
                                 │  --public     │ → anyone
-                                │  --emails     │ → OTP login
+                                │  --locked     │ → access codes
                                 └──────────────┘
 ```
 
-A single persistent Cloudflare Tunnel runs on your dev box. A wildcard DNS record (`*.yourdomain.com`) routes all subdomains to the tunnel. The `devtunnel` CLI manages per-project ingress rules and optionally creates Cloudflare Zero Trust Access applications to lock down individual subdomains.
+A single persistent Cloudflare Tunnel runs on your dev box. A wildcard DNS record (`*.yourdomain.com`) routes all subdomains to the tunnel. The `devtunnel` CLI manages per-project ingress rules and access codes to control who can reach locked projects.
 
 ### Public vs Locked
 
-**Public** (`--public`): No authentication. Anyone with the URL can access it. Good for portfolios, demos, public APIs.
+**Public** (`--public`): No authentication. Anyone with the URL can access it. Good for portfolios, demos, public APIs. This is the default.
 
-**Locked** (`--emails`): Cloudflare Access sits in front of the subdomain. When someone visits:
+**Locked** (`--locked`): Projects require access codes. Auth enforcement happens externally. Create and manage codes with `devtunnel codes`:
 
-1. Cloudflare intercepts the request at the edge (before it reaches your box)
-2. Visitor sees a login screen asking for their email
-3. If the email is in the allowed list → one-time PIN sent to their inbox
-4. They enter the PIN → 24h session cookie → access granted
-5. If the email is NOT in the list → denied, no email sent
+```bash
+devtunnel add client-app 5173 --locked
 
-Your dev server never sees unauthorized traffic.
+# Create a code for a specific user
+devtunnel codes client-app add client@company.com
+
+# Create an anonymous code with usage limits
+devtunnel codes client-app add --no-email --max 10
+
+# Create a code that expires
+devtunnel codes client-app add user@test.com --expire 2026-04-01T00:00:00Z
+
+# List, edit, delete codes
+devtunnel codes client-app
+devtunnel codes client-app edit abc123 --max 20 --reset-uses
+devtunnel codes client-app rm abc123
+```
 
 ## Prerequisites
 
@@ -124,40 +134,22 @@ systemctl --user enable --now cloudflared.service
 sudo loginctl enable-linger $USER
 ```
 
-### 9. (Optional) Set up for locked projects
-
-For locked projects (email OTP), you need a Cloudflare API token:
-
-1. Go to https://dash.cloudflare.com/profile/api-tokens
-2. Create a token with **Access: Apps and Policies Edit** permission
-3. Find your Account ID in the Cloudflare dashboard URL
-
-```bash
-# Add to ~/.bashrc
-export CLOUDFLARE_ACCOUNT_ID="your-account-id"
-export CLOUDFLARE_API_TOKEN="your-api-token"
-```
-
-Then enable the One-Time PIN identity provider (one-time setup):
-
-```bash
-devtunnel setup-otp
-```
-
 ## Usage
 
 ```bash
-# Public project — no auth, anyone can access
+# Public project — no auth, anyone can access (default)
 devtunnel add portfolio 3000 --public
 
-# Locked project — only these emails get in via OTP
-devtunnel add client-app 5173 --emails client@company.com,pm@company.com
+# Locked project — requires access codes
+devtunnel add client-app 5173 --locked
 
 # Auto-managed app process (creates a systemd service that auto-restarts on crash/reboot)
 devtunnel add myapp 3000 --public --dir ~/projects/myapp --cmd "npm run dev"
 
-# Locked + auto-managed
-devtunnel add client-app 5173 --emails client@acme.com --dir ~/projects/client --cmd "npm run dev"
+# Manage access codes for locked projects
+devtunnel codes client-app add client@company.com
+devtunnel codes client-app add --no-email --max 5
+devtunnel codes client-app
 
 # Update a project's settings (auto-restarts service and tunnel as needed)
 devtunnel set myapp --port 3001
@@ -166,7 +158,7 @@ devtunnel set myapp --cmd "npm start" --dir ~/projects/myapp-v2
 # List all projects (shows service status)
 devtunnel ls
 
-# Remove a project (also stops the app service and deletes the Access app)
+# Remove a project (also stops the app service)
 devtunnel rm client-app
 
 # Restart / stop a project's app service
@@ -191,10 +183,12 @@ devtunnel status
 
 ```bash
 # Share a project with a client — auto-starts and auto-restarts the dev server
-devtunnel add acme 5173 --emails client@acme.com --dir ~/projects/acme-dashboard --cmd "npm run dev"
+devtunnel add acme 5173 --locked --dir ~/projects/acme-dashboard --cmd "npm run dev"
+
+# Create an access code for the client
+devtunnel codes acme add client@acme.com
 
 # Send them the link: https://acme.yourdomain.com
-# They get an email OTP login, 24h session
 # The dev server stays running even after reboot
 
 # Check on it
@@ -209,11 +203,16 @@ devtunnel rm acme
 
 | Command | Description |
 |---|---|
-| `devtunnel add <name> <port> --public` | Add a public project |
-| `devtunnel add <name> <port> --emails a@b,c@d` | Add a locked project |
+| `devtunnel add <name> <port> --public` | Add a public project (default) |
+| `devtunnel add <name> <port> --locked` | Add a locked project (requires access codes) |
 | `devtunnel add ... --dir PATH --cmd CMD` | Also create an auto-managed app service |
-| `devtunnel rm <name>` | Remove a project, its service, and Access app |
+| `devtunnel rm <name>` | Remove a project and its service |
 | `devtunnel set <name> [--cmd C] [--dir D] [--port P]` | Update project settings (auto-restarts) |
+| `devtunnel codes <project>` | List access codes |
+| `devtunnel codes <project> add <email> [--max N] [--expire DT]` | Create access code |
+| `devtunnel codes <project> add --no-email [--max N]` | Create anonymous code |
+| `devtunnel codes <project> edit <prefix> [opts]` | Edit a code |
+| `devtunnel codes <project> rm <prefix>` | Delete a code |
 | `devtunnel ls` | List all active projects with service status |
 | `devtunnel restart` | Restart the tunnel service |
 | `devtunnel restart <name>` | Restart a project's app service |
@@ -221,7 +220,6 @@ devtunnel rm acme
 | `devtunnel logs <name>` | Tail a project's app logs |
 | `devtunnel log [N]` | Show last N operations log entries (default 50) |
 | `devtunnel status` | Show tunnel and project status |
-| `devtunnel setup-otp` | Enable email OTP (one-time setup) |
 | `devtunnel web` | Start the web management UI (port 7000) |
 | `devtunnel help` | Show help |
 
@@ -234,8 +232,7 @@ devtunnel rm acme
 | `~/.local/share/devtunnel/logs/devtunnel.log` | Structured operations log (JSONL) |
 | `~/.local/share/devtunnel/healthcheck-state.json` | Health check failure counters |
 | `~/.cloudflared/config.yml` | Cloudflare Tunnel ingress config (auto-managed) |
-| `~/.cloudflared/devtunnel.json` | Project state (ports, access, dir, cmd, Access app IDs) |
-| `~/.cloudflared/.env` | Cloudflare API credentials |
+| `~/.cloudflared/devtunnel.json` | Project state (ports, access, codes, dir, cmd) |
 | `~/.cloudflared/cert.pem` | Tunnel auth certificate |
 | `~/.cloudflared/<tunnel-id>.json` | Tunnel credentials |
 | `~/.config/systemd/user/cloudflared.service` | Tunnel systemd service |
@@ -247,14 +244,18 @@ devtunnel rm acme
 ## Architecture
 
 ```
-devtunnel add myapp 3000 --emails user@co.com --dir ~/proj --cmd "npm run dev"
+devtunnel add myapp 3000 --locked --dir ~/proj --cmd "npm run dev"
     │
     ├─ Updates ~/.cloudflared/devtunnel.json (state)
     ├─ Rebuilds ~/.cloudflared/config.yml (ingress rules)
-    ├─ Creates Cloudflare Access Application via API (if --emails)
-    ├─ Creates Access Policy (allow listed emails)
     ├─ Creates systemd user service devtunnel-app-myapp.service (if --dir/--cmd)
     └─ Restarts cloudflared systemd service
+
+devtunnel codes myapp add client@acme.com
+    │
+    ├─ Generates 32-char hex token
+    ├─ Appends to project's codes array in state
+    └─ Logs the action
 ```
 
 The tunnel runs as a **systemd user service** with linger enabled, so it survives reboots and doesn't need root. The wildcard DNS record means you never need to touch DNS — just add a project and the subdomain works immediately.
@@ -300,10 +301,10 @@ All services are hardened with start limits to prevent restart loops:
 
 The web management UI runs on port 7000 and provides:
 
-- **Projects tab**: View all projects with status, service controls (start/stop/restart), edit button, and health indicators
+- **Projects tab**: View all projects with status, service controls (start/stop/restart), edit button, codes button, and health indicators
 - **Add Project tab**: Form to add new Cloudflare or Tailscale projects with optional app service config
-- **Access Log tab**: Cloudflare Access events (email OTP logins)
 - **Operations Log tab**: Structured log of all CLI and web actions with project filtering
+- **Codes modal**: Create, view, and delete access codes per project
 - **Edit Project modal**: Update port, working directory, or start command — auto-restarts services
 
 ## Troubleshooting
@@ -320,14 +321,8 @@ ingress:
   - service: http_status:404
 ```
 
-**Access app not created (API errors):**
-Check that `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are set and the token has Access:Edit permissions.
-
 **Visitor sees 404:**
 Make sure your dev server is actually running on the port you specified.
-
-**OTP email not arriving:**
-The email address must exactly match what's in the `--emails` list. Check spam folders. Run `devtunnel setup-otp` if you haven't already.
 
 ## License
 

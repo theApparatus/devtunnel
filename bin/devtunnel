@@ -5,25 +5,20 @@ set -euo pipefail
 # devtunnel - manage cloudflare tunnel + tailscale routes for dev projects
 #
 # Usage:
-#   devtunnel add <name> <port> [--public]            Add a CF public route
-#   devtunnel add <name> <port> --emails a@b,c@d      CF locked route (email OTP)
+#   devtunnel add <name> <port> [--public|--locked]    Add a CF route
 #   devtunnel add <name> <port> --serve               Tailscale Serve (tailnet only)
 #   devtunnel add <name> <port> --funnel              Tailscale Funnel (public *.ts.net)
 #   devtunnel add <name> <port> --dir /path --cmd "npm run dev"  Auto-manage the app process
 #   devtunnel rm <name>                                Remove a project route + service
 #   devtunnel set <name> [--cmd C] [--dir D] [--port P]  Update project settings
+#   devtunnel codes <project> [add|edit|rm]            Manage access codes for locked projects
 #   devtunnel ls                                       List active project routes
 #   devtunnel restart                                  Restart the tunnel service
 #   devtunnel restart <name>                           Restart a project's app service
 #   devtunnel stop <name>                              Stop a project's app service
 #   devtunnel logs <name> [-f]                          Show (or tail) a project's app logs
 #   devtunnel log [N]                                  Show last N operations log entries
-#   devtunnel setup-otp                                Enable one-time PIN identity provider
 #   devtunnel status                                   Show tunnel service status
-#
-# Requires (Cloudflare):
-#   CLOUDFLARE_API_TOKEN  - API token with Access:Edit + DNS:Edit
-#   CLOUDFLARE_ACCOUNT_ID - Your Cloudflare account ID
 #
 # Requires (Tailscale):
 #   tailscale CLI installed and connected (sudo tailscale up)
@@ -31,12 +26,11 @@ set -euo pipefail
 # Config stored in: ~/.cloudflared/devtunnel.json
 #
 
-DOMAIN="yourdomain.com"            # ← Set by install.sh or edit manually
+DOMAIN="app.fixshifted.com"            # ← Set by install.sh or edit manually
 CONFIG_DIR="$HOME/.cloudflared"
 TUNNEL_CONFIG="$CONFIG_DIR/config.yml"
-STATE_FILE="$CONFIG_DIR/devtunnel.json"
-TUNNEL_ID="your-tunnel-uuid"        # ← Set by install.sh or edit manually
-CF_API="https://api.cloudflare.com/client/v4"
+STATE_FILE="$HOME/.config/devtunnel/state.json"
+TUNNEL_ID="246d495b-e6a0-4bc1-8643-21e84914e8e9"        # ← Set by install.sh or edit manually
 SERVICE_PREFIX="devtunnel-app"
 
 # Tailscale
@@ -100,12 +94,6 @@ show_recent_journal() {
     echo -e "${YELLOW}---${NC}"
 }
 
-# Check required env vars for API operations
-check_api_env() {
-    [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || die "CLOUDFLARE_API_TOKEN not set. Create one at https://dash.cloudflare.com/profile/api-tokens with Access:Edit permissions."
-    [[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]] || die "CLOUDFLARE_ACCOUNT_ID not set. Find it in your Cloudflare dashboard URL."
-}
-
 # Source credentials if available
 if [[ -f "$CONFIG_DIR/.env" ]]; then
     set -a; source "$CONFIG_DIR/.env"; set +a
@@ -113,9 +101,21 @@ fi
 
 # Initialize state file
 init_state() {
+    mkdir -p "$(dirname "$STATE_FILE")"
     if [[ ! -f "$STATE_FILE" ]]; then
-        echo '{"projects":{}}' > "$STATE_FILE"
+        local secret
+        secret=$(openssl rand -hex 32)
+        (umask 077; echo "{\"projects\":{},\"cookie_secret\":\"${secret}\"}" > "$STATE_FILE")
     fi
+    # Ensure cookie_secret exists
+    if [[ "$(jq -r '.cookie_secret // empty' "$STATE_FILE" 2>/dev/null)" == "" ]]; then
+        local secret
+        secret=$(openssl rand -hex 32)
+        jq --arg s "$secret" '.cookie_secret = $s' "$STATE_FILE" > "${STATE_FILE}.tmp" \
+            && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+    fi
+    # Ensure restrictive permissions even on existing files
+    chmod 600 "$STATE_FILE" 2>/dev/null || true
 }
 
 # Read state
@@ -125,17 +125,6 @@ get_projects() {
 
 get_project() {
     jq -r ".projects[\"$1\"] // empty" "$STATE_FILE"
-}
-
-# CF API helper
-cf_api() {
-    local method="$1" path="$2"
-    shift 2
-    curl -s -X "$method" \
-        "${CF_API}${path}" \
-        -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-        -H "Content-Type: application/json" \
-        "$@"
 }
 
 # Rebuild the cloudflared config.yml from state
@@ -171,6 +160,9 @@ service_name() {
 create_app_service() {
     local name="$1" dir="$2" cmd="$3" port="$4"
 
+    # Escape single quotes for safe interpolation into ExecStart='...'
+    local safe_cmd="${cmd//\'/\'\\\'\'}"
+
     local svc_file="$HOME/.config/systemd/user/$(service_name "$name")"
     mkdir -p "$HOME/.config/systemd/user"
 
@@ -185,7 +177,7 @@ StartLimitBurst=10
 Type=simple
 WorkingDirectory=${dir}
 ExecStartPre=-/usr/bin/fuser -k ${port}/tcp
-ExecStart=/bin/bash -c '${cmd}'
+ExecStart=/bin/bash -c '${safe_cmd}'
 Restart=always
 RestartSec=3
 Environment=PORT=${port}
@@ -234,81 +226,6 @@ get_app_service_status() {
     else
         echo "none"
     fi
-}
-
-# Create a Cloudflare Access application for a hostname
-create_access_app() {
-    local name="$1" emails="$2"
-    local hostname="${name}.${DOMAIN}"
-
-    info "Creating Access application for ${hostname}..."
-    local app_result
-    app_result=$(cf_api POST "/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps" \
-        -d "{
-            \"name\": \"devbox-${name}\",
-            \"domain\": \"${hostname}\",
-            \"type\": \"self_hosted\",
-            \"session_duration\": \"24h\",
-            \"self_hosted_domains\": [\"${hostname}\"],
-            \"app_launcher_visible\": true,
-            \"skip_interstitial\": true
-        }")
-
-    local app_id
-    app_id=$(echo "$app_result" | jq -r '.result.id // empty')
-    if [[ -z "$app_id" ]]; then
-        local err
-        err=$(echo "$app_result" | jq -r '.errors[0].message // "unknown error"')
-        die "Failed to create Access app: $err"
-    fi
-
-    info "Access app created: ${app_id}"
-
-    # Build include rules from email list
-    local include_rules="["
-    local first=true
-    IFS=',' read -ra email_arr <<< "$emails"
-    for email in "${email_arr[@]}"; do
-        email=$(echo "$email" | xargs) # trim whitespace
-        if [[ "$first" == true ]]; then
-            first=false
-        else
-            include_rules+=","
-        fi
-        include_rules+="{\"email\":{\"email\":\"${email}\"}}"
-    done
-    include_rules+="]"
-
-    info "Creating Access policy for emails: ${emails}..."
-    local policy_result
-    policy_result=$(cf_api POST "/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps/${app_id}/policies" \
-        -d "{
-            \"name\": \"Allow invited emails\",
-            \"decision\": \"allow\",
-            \"precedence\": 1,
-            \"include\": ${include_rules},
-            \"require\": [],
-            \"exclude\": []
-        }")
-
-    local policy_id
-    policy_id=$(echo "$policy_result" | jq -r '.result.id // empty')
-    if [[ -z "$policy_id" ]]; then
-        local err
-        err=$(echo "$policy_result" | jq -r '.errors[0].message // "unknown error"')
-        warn "Failed to create policy: $err"
-    else
-        info "Access policy created: ${policy_id}"
-    fi
-
-    echo "$app_id"
-}
-
-# Delete a Cloudflare Access application
-delete_access_app() {
-    local app_id="$1"
-    info "Deleting Access application ${app_id}..."
-    cf_api DELETE "/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps/${app_id}" > /dev/null
 }
 
 # ---- Tailscale helpers ----
@@ -411,10 +328,10 @@ restart_tunnel_service() {
 # ---- Commands ----
 
 cmd_add() {
-    local name="" port="" access="locked" emails="" dir="" cmd="" provider="cloudflare" ts_port_override=""
+    local name="" port="" access="public" dir="" cmd="" provider="cloudflare" ts_port_override=""
 
     # Parse args
-    [[ $# -ge 2 ]] || die "Usage: devtunnel add <name> <port> [--public | --emails a@b | --serve | --funnel] [--dir /path --cmd 'npm run dev']"
+    [[ $# -ge 2 ]] || die "Usage: devtunnel add <name> <port> [--public | --locked | --serve | --funnel] [--dir /path --cmd 'npm run dev']"
     name="$1"; port="$2"; shift 2
 
     # Validate name (subdomain safe)
@@ -425,7 +342,7 @@ cmd_add() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --public)   access="public"; shift ;;
-            --emails)   access="locked"; emails="$2"; shift 2 ;;
+            --locked)   access="locked"; shift ;;
             --serve)    provider="tailscale"; access="serve"; shift ;;
             --funnel)   provider="tailscale"; access="funnel"; shift ;;
             --ts-port)  ts_port_override="$2"; shift 2 ;;
@@ -434,11 +351,6 @@ cmd_add() {
             *) die "Unknown option: $1" ;;
         esac
     done
-
-    # Validate provider-specific options
-    if [[ "$provider" == "tailscale" && -n "$emails" ]]; then
-        die "--emails is not supported with Tailscale. Access is controlled by tailnet membership."
-    fi
 
     # Check if already exists
     if [[ -n "$(get_project "$name")" ]]; then
@@ -495,26 +407,35 @@ cmd_add() {
         info "URL: ${url}"
     else
         # Cloudflare path
-        local access_app_id=""
-        if [[ "$access" == "locked" ]]; then
-            if [[ -z "$emails" ]]; then
-                die "Locked access requires --emails. Use --public for no auth, or --emails user@a.com,user@b.com"
-            fi
-            check_api_env
-            access_app_id=$(create_access_app "$name" "$emails")
-        fi
-
         # Update state
-        jq --arg name "$name" \
-           --arg port "$port" \
-           --arg access "$access" \
-           --arg emails "$emails" \
-           --arg app_id "$access_app_id" \
-           --arg provider "cloudflare" \
-           --arg dir "$dir" \
-           --arg cmd "$cmd" \
-           '.projects[$name] = {port: ($port|tonumber), provider: $provider, access: $access, emails: $emails, access_app_id: $app_id, dir: $dir, cmd: $cmd}' \
-           "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        if [[ "$access" == "locked" ]]; then
+            local auth_user="$name"
+            local auth_salt auth_pw auth_hash auth_pass
+            auth_salt=$(openssl rand -hex 16)
+            auth_pw=$(openssl rand -hex 16)
+            auth_hash=$(printf '%s' "${auth_salt}${auth_pw}" | sha256sum | cut -d' ' -f1)
+            auth_pass="${auth_salt}:${auth_hash}"
+
+            jq --arg name "$name" \
+               --arg port "$port" \
+               --arg access "$access" \
+               --arg provider "cloudflare" \
+               --arg dir "$dir" \
+               --arg cmd "$cmd" \
+               --arg auth_user "$auth_user" \
+               --arg auth_pass "$auth_pass" \
+               '.projects[$name] = {port: ($port|tonumber), provider: $provider, access: $access, auth_user: $auth_user, auth_pass: $auth_pass, invite_codes: [], dir: $dir, cmd: $cmd}' \
+               "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        else
+            jq --arg name "$name" \
+               --arg port "$port" \
+               --arg access "$access" \
+               --arg provider "cloudflare" \
+               --arg dir "$dir" \
+               --arg cmd "$cmd" \
+               '.projects[$name] = {port: ($port|tonumber), provider: $provider, access: $access, dir: $dir, cmd: $cmd}' \
+               "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        fi
 
         # Rebuild config and restart
         rebuild_config
@@ -524,7 +445,10 @@ cmd_add() {
         if [[ "$access" == "public" ]]; then
             info "Access: ${YELLOW}PUBLIC${NC} (no auth)"
         else
-            info "Access: ${GREEN}LOCKED${NC} (OTP to: ${emails})"
+            info "Access: ${GREEN}LOCKED${NC}"
+            info "Auth user: ${auth_user}"
+            info "Auth pass: ${auth_pw}"
+            info "Create invite codes: devtunnel codes ${name} add user@example.com"
         fi
 
         # Create app service if dir and cmd provided
@@ -558,14 +482,6 @@ cmd_rm() {
         ts_access=$(echo "$project" | jq -r '.access // "serve"')
         if [[ -n "$ts_port" ]]; then
             ts_remove "$ts_port" "$ts_access"
-        fi
-    else
-        # Cloudflare path — delete Access app if it exists
-        local app_id
-        app_id=$(echo "$project" | jq -r '.access_app_id // empty')
-        if [[ -n "$app_id" ]]; then
-            check_api_env
-            delete_access_app "$app_id"
         fi
     fi
 
@@ -716,28 +632,6 @@ cmd_logs() {
     fi
 }
 
-cmd_setup_otp() {
-    check_api_env
-    info "Enabling One-Time PIN identity provider..."
-    local result
-    result=$(cf_api POST "/accounts/${CLOUDFLARE_ACCOUNT_ID}/access/identity_providers" \
-        -d '{"name": "One-Time PIN", "type": "onetimepin", "config": {}}')
-
-    local success
-    success=$(echo "$result" | jq -r '.success')
-    if [[ "$success" == "true" ]]; then
-        info "One-Time PIN enabled! Users will receive a code via email."
-    else
-        local err
-        err=$(echo "$result" | jq -r '.errors[0].message // "unknown"')
-        if [[ "$err" == *"already exists"* ]] || [[ "$err" == *"duplicate"* ]]; then
-            info "One-Time PIN is already enabled."
-        else
-            warn "Response: $err (may already be enabled)"
-        fi
-    fi
-}
-
 cmd_status() {
     echo ""
     if systemctl --user is-active cloudflared.service &>/dev/null 2>&1; then
@@ -782,7 +676,7 @@ cmd_help() {
 
   CLOUDFLARE:
     devtunnel add <name> <port> --public              Public, no auth
-    devtunnel add <name> <port> --emails a@b,c@d      Locked, email OTP
+    devtunnel add <name> <port> --locked              Locked, requires access codes
 
   TAILSCALE:
     devtunnel add <name> <port> --serve               Tailscale Serve (tailnet only)
@@ -799,7 +693,13 @@ cmd_help() {
     devtunnel logs <name> [-f|--follow]                 Show (or tail) a project's app logs
     devtunnel log [N]                                  Show last N operations log entries
     devtunnel status                                   Show status (CF + Tailscale)
-    devtunnel setup-otp                                Enable email OTP (one time)
+
+  ACCESS CODES (for locked projects):
+    devtunnel codes <project>                          List codes
+    devtunnel codes <project> add <email> [--max N] [--expire DT]
+    devtunnel codes <project> add --no-email [--max N] [--expire DT]
+    devtunnel codes <project> edit <code-prefix> [--email E] [--max N] [--expire DT] [--reset-uses]
+    devtunnel codes <project> rm <code-prefix>
 
   APP SERVICE (auto-managed process):
     devtunnel add myapp 3000 --public --dir ~/projects/myapp --cmd "npm run dev"
@@ -811,16 +711,230 @@ cmd_help() {
   MANAGEMENT:
     devtunnel web                                  Start web management UI (port 7000)
 
-  ENVIRONMENT:
-    CLOUDFLARE_API_TOKEN    Required for locked (non-public) CF projects
-    CLOUDFLARE_ACCOUNT_ID   Required for locked (non-public) CF projects
-
   NOTES:
     Tailscale Funnel only supports ports 443, 8443, 10000 (max 3 Funnel projects).
     Tailscale Serve supports any port and is private to your tailnet.
-    --emails is only supported with Cloudflare (use --serve for private access).
 
 EOF
+}
+
+# ---- Code Management ----
+
+cmd_codes() {
+    [[ $# -ge 1 ]] || die "Usage: devtunnel codes <project> [add|edit|rm]"
+    local name="$1"; shift
+
+    init_state
+    local project
+    project=$(get_project "$name")
+    [[ -n "$project" ]] || die "Project '${name}' not found"
+
+    local subcmd="list"
+    if [[ $# -gt 0 ]]; then
+        case "$1" in
+            add|edit|rm|list) subcmd="$1"; shift ;;
+        esac
+    fi
+
+    case "$subcmd" in
+        list) cmd_codes_list "$name" ;;
+        add)  cmd_codes_add "$name" "$@" ;;
+        edit) cmd_codes_edit "$name" "$@" ;;
+        rm)   cmd_codes_rm "$name" "$@" ;;
+    esac
+}
+
+cmd_codes_list() {
+    local name="$1"
+    local codes
+    codes=$(jq -r ".projects[\"$name\"].invite_codes // []" "$STATE_FILE")
+    local count
+    count=$(echo "$codes" | jq 'length')
+
+    if [[ "$count" -eq 0 ]]; then
+        echo "No codes for project '${name}'."
+        echo ""
+        echo "Add one:  devtunnel codes ${name} add user@example.com"
+        return
+    fi
+
+    printf "\n${CYAN}%-34s %-28s %-10s %-22s %s${NC}\n" "CODE" "EMAIL" "USES" "EXPIRE" "STATUS"
+    printf "%-34s %-28s %-10s %-22s %s\n" "----" "-----" "----" "------" "------"
+
+    echo "$codes" | jq -c '.[]' | while IFS= read -r entry; do
+        local code email uses max_uses expires_at
+        code=$(echo "$entry" | jq -r '.code')
+        email=$(echo "$entry" | jq -r '.email // empty')
+        uses=$(echo "$entry" | jq -r '.uses // 0')
+        max_uses=$(echo "$entry" | jq -r '.max_uses // empty')
+        expires_at=$(echo "$entry" | jq -r '.expires_at // empty')
+
+        local uses_display="${uses}"
+        if [[ -n "$max_uses" && "$max_uses" != "null" && "$max_uses" -gt 0 ]] 2>/dev/null; then
+            uses_display="${uses}/${max_uses}"
+        else
+            uses_display="${uses}/∞"
+        fi
+
+        local status="${GREEN}active${NC}"
+        if [[ -n "$max_uses" && "$max_uses" != "null" && "$max_uses" -gt 0 && "$uses" -ge "$max_uses" ]] 2>/dev/null; then
+            status="${RED}exhausted${NC}"
+        fi
+        if [[ -n "$expires_at" && "$expires_at" != "null" ]]; then
+            local exp_epoch now_epoch
+            exp_epoch=$(date -d "$expires_at" +%s 2>/dev/null || echo 0)
+            now_epoch=$(date -u +%s)
+            if (( exp_epoch > 0 && now_epoch >= exp_epoch )); then
+                status="${RED}expired${NC}"
+            fi
+        fi
+
+        local email_display="${email:-${YELLOW}anonymous${NC}}"
+        local expire_display="${expires_at:-—}"
+
+        printf "%-34s %-28b %-10s %-22s %b\n" "${code:0:32}" "$email_display" "$uses_display" "$expire_display" "$status"
+    done
+    echo ""
+}
+
+cmd_codes_add() {
+    local name="$1"; shift
+    local email="" no_email=false max_uses="" expires_at=""
+
+    # Parse: first positional arg is email (unless --no-email comes first)
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-email) no_email=true; shift ;;
+            --max)      max_uses="$2"; shift 2 ;;
+            --expire)   expires_at="$2"; shift 2 ;;
+            -*)         die "Unknown option: $1" ;;
+            *)
+                if [[ -z "$email" ]]; then
+                    email="$1"; shift
+                else
+                    die "Unexpected argument: $1"
+                fi
+                ;;
+        esac
+    done
+
+    if [[ "$no_email" == false && -z "$email" ]]; then
+        die "Usage: devtunnel codes ${name} add <email> [--max N] [--expire DT] or --no-email"
+    fi
+    if [[ "$no_email" == true ]]; then
+        email=""
+    fi
+
+    local code
+    code=$(openssl rand -hex 16 | tr '[:lower:]' '[:upper:]' | head -c 12)
+
+    local email_json="null"
+    if [[ -n "$email" ]]; then
+        email_json=$(printf '%s' "$email" | jq -Rs '.')
+    fi
+    local max_json="null"
+    if [[ -n "$max_uses" ]]; then
+        max_json="$max_uses"
+    fi
+    local expire_json="null"
+    if [[ -n "$expires_at" ]]; then
+        expire_json=$(printf '%s' "$expires_at" | jq -Rs '.')
+    fi
+
+    jq --arg name "$name" \
+       --arg code "$code" \
+       --argjson email "$email_json" \
+       --argjson max_uses "$max_json" \
+       --argjson expires_at "$expire_json" \
+       '.projects[$name].invite_codes = ((.projects[$name].invite_codes // []) + [{code: $code, email: $email, expires_at: $expires_at, max_uses: $max_uses, uses: 0}])' \
+       "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+
+    log_event "info" "code_add" "$name" "code=${code:0:8}... email=${email:-anonymous}"
+    info "Code created: ${CYAN}${code}${NC}"
+    if [[ -n "$email" ]]; then
+        info "Email: ${email}"
+    else
+        info "Email: ${YELLOW}anonymous${NC}"
+    fi
+    if [[ -n "$max_uses" ]]; then info "Max uses: ${max_uses}"; fi
+    if [[ -n "$expires_at" ]]; then info "Expires: ${expires_at}"; fi
+}
+
+cmd_codes_edit() {
+    local name="$1"; shift
+    [[ $# -ge 1 ]] || die "Usage: devtunnel codes ${name} edit <code-prefix> [--email E] [--max N] [--expire DT] [--reset-uses]"
+    local prefix="$1"; shift
+
+    local new_email="" new_max="" new_expire="" reset_uses=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --email)      new_email="$2"; shift 2 ;;
+            --max)        new_max="$2"; shift 2 ;;
+            --expire)     new_expire="$2"; shift 2 ;;
+            --reset-uses) reset_uses=true; shift ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+
+    # Find matching code by prefix
+    local match_count
+    match_count=$(jq --arg name "$name" --arg prefix "$prefix" \
+        '[.projects[$name].invite_codes // [] | .[] | select(.code | startswith($prefix))] | length' "$STATE_FILE")
+
+    [[ "$match_count" -eq 0 ]] && die "No code matching prefix '${prefix}'"
+    [[ "$match_count" -gt 1 ]] && die "Multiple codes match prefix '${prefix}'. Use a longer prefix."
+
+    # Build jq update expression
+    local jq_expr='.projects[$name].invite_codes = [.projects[$name].invite_codes[] | if (.code | startswith($prefix)) then'
+    local jq_updates=""
+
+    if [[ -n "$new_email" ]]; then
+        jq_updates+=' | .email = $new_email'
+    fi
+    if [[ -n "$new_max" ]]; then
+        jq_updates+=' | .max_uses = ($new_max | tonumber)'
+    fi
+    if [[ -n "$new_expire" ]]; then
+        jq_updates+=' | .expires_at = $new_expire'
+    fi
+    if [[ "$reset_uses" == true ]]; then
+        jq_updates+=' | .uses = 0'
+    fi
+
+    [[ -z "$jq_updates" ]] && die "No changes specified"
+
+    jq_expr+=" (. ${jq_updates}) else . end]"
+
+    jq --arg name "$name" \
+       --arg prefix "$prefix" \
+       --arg new_email "$new_email" \
+       --arg new_max "$new_max" \
+       --arg new_expire "$new_expire" \
+       "$jq_expr" \
+       "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+
+    log_event "info" "code_edit" "$name" "prefix=${prefix}"
+    info "Code updated"
+}
+
+cmd_codes_rm() {
+    local name="$1"; shift
+    [[ $# -ge 1 ]] || die "Usage: devtunnel codes ${name} rm <code-prefix>"
+    local prefix="$1"
+
+    local match_count
+    match_count=$(jq --arg name "$name" --arg prefix "$prefix" \
+        '[.projects[$name].invite_codes // [] | .[] | select(.code | startswith($prefix))] | length' "$STATE_FILE")
+
+    [[ "$match_count" -eq 0 ]] && die "No code matching prefix '${prefix}'"
+    [[ "$match_count" -gt 1 ]] && die "Multiple codes match prefix '${prefix}'. Use a longer prefix."
+
+    jq --arg name "$name" --arg prefix "$prefix" \
+       '.projects[$name].invite_codes = [.projects[$name].invite_codes[] | select(.code | startswith($prefix) | not)]' \
+       "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+
+    log_event "info" "code_rm" "$name" "prefix=${prefix}"
+    info "Code removed"
 }
 
 cmd_set() {
@@ -1077,7 +1191,7 @@ case "${1:-help}" in
     logs)     shift; cmd_logs "$@" ;;
     log)      shift; cmd_log "$@" ;;
     status)   cmd_status ;;
-    setup-otp) cmd_setup_otp ;;
+    codes)    shift; cmd_codes "$@" ;;
     healthcheck) cmd_healthcheck ;;
     web)      shift; cmd_web "$@" ;;
     help|-h|--help) cmd_help ;;

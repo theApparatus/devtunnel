@@ -184,40 +184,16 @@ else
     warn "Tunnel service failed to start. Check: journalctl --user -u cloudflared.service"
 fi
 
-# Step 9: Optional API setup
+# Step 9: Locked project info
 echo ""
-echo -e "${CYAN}── Optional: Locked project support ──${NC}"
+echo -e "${CYAN}── Locked projects ──${NC}"
 echo ""
-echo "To lock projects behind email OTP, you need:"
-echo "  1. A Cloudflare API token (Access: Apps and Policies Edit)"
-echo "  2. Your Cloudflare Account ID"
+echo "  To restrict access to a project, use --locked:"
+echo "    devtunnel add myapp 3000 --locked"
 echo ""
-read -rp "Set up locked project support now? [y/N]: " SETUP_API
-
-if [[ "${SETUP_API,,}" == "y" ]]; then
-    echo ""
-    read -rp "Cloudflare Account ID: " CF_ACCOUNT_ID
-    read -rp "Cloudflare API Token: " CF_API_TOKEN
-
-    if [[ -n "$CF_ACCOUNT_ID" && -n "$CF_API_TOKEN" ]]; then
-        # Add to bashrc
-        {
-            echo ""
-            echo "# devtunnel - Cloudflare Zero Trust"
-            echo "export CLOUDFLARE_ACCOUNT_ID=\"${CF_ACCOUNT_ID}\""
-            echo "export CLOUDFLARE_API_TOKEN=\"${CF_API_TOKEN}\""
-        } >> "$HOME/.bashrc"
-
-        export CLOUDFLARE_ACCOUNT_ID="$CF_ACCOUNT_ID"
-        export CLOUDFLARE_API_TOKEN="$CF_API_TOKEN"
-
-        info "Credentials saved to ~/.bashrc"
-
-        # Enable OTP
-        info "Enabling One-Time PIN identity provider..."
-        devtunnel setup-otp
-    fi
-fi
+echo "  Then create access codes:"
+echo "    devtunnel codes myapp add user@example.com"
+echo ""
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════╗${NC}"

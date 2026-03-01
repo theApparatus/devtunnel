@@ -35,7 +35,7 @@
   }
   .container { max-width: 1040px; margin: 0 auto; padding: 32px 20px; }
 
-  /* ── Header ── */
+  /* -- Header -- */
   header {
     display: flex;
     align-items: center;
@@ -68,7 +68,7 @@
   .status-pill.stopped { background: var(--red-dim); color: var(--red); }
   .status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
-  /* ── Stat cards ── */
+  /* -- Stat cards -- */
   .stats {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -85,7 +85,7 @@
   .stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
   .stat-card .sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
 
-  /* ── Tabs ── */
+  /* -- Tabs -- */
   .tabs {
     display: flex;
     gap: 0;
@@ -116,7 +116,7 @@
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
 
-  /* ── Card ── */
+  /* -- Card -- */
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -134,7 +134,7 @@
     letter-spacing: 0.5px;
   }
 
-  /* ── Project list ── */
+  /* -- Project list -- */
   .project-list { display: flex; flex-direction: column; gap: 6px; }
   .project-item {
     display: grid;
@@ -171,17 +171,9 @@
   .badge-funnel { background: var(--purple-dim); color: var(--purple); }
   .badge-cf { background: var(--yellow-dim); color: var(--yellow); }
   .badge-ts { background: var(--indigo-dim); color: var(--indigo); }
-  .email-list {
-    font-size: 12px;
-    color: var(--text-muted);
-    max-width: 220px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
   .actions { display: flex; gap: 6px; }
 
-  /* ── Buttons ── */
+  /* -- Buttons -- */
   .btn {
     padding: 7px 14px;
     border-radius: 6px;
@@ -205,7 +197,7 @@
   .btn-success:hover { background: var(--green-dim); border-color: var(--green); }
   .svc-controls { display: flex; gap: 4px; align-items: center; }
 
-  /* ── Forms ── */
+  /* -- Forms -- */
   .form-row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: flex-end; }
   .form-group { display: flex; flex-direction: column; gap: 4px; }
   .form-group label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
@@ -223,7 +215,7 @@
   .form-group input::placeholder { color: var(--text-muted); }
   .hidden { display: none !important; }
 
-  /* ── Toast ── */
+  /* -- Toast -- */
   .toast {
     position: fixed;
     bottom: 24px;
@@ -242,7 +234,7 @@
   .toast.success { background: var(--green-dim); border: 1px solid var(--green); color: var(--green); }
   .toast.error { background: var(--red-dim); border: 1px solid var(--red); color: var(--red); }
 
-  /* ── Modal ── */
+  /* -- Modal -- */
   .modal-overlay {
     display: none;
     position: fixed;
@@ -262,6 +254,7 @@
     width: 460px;
     max-width: 90vw;
   }
+  .modal.wide { width: 700px; }
   .modal h3 { font-size: 16px; margin-bottom: 4px; }
   .modal .modal-sub { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; }
   .modal .form-group { margin-bottom: 12px; }
@@ -279,7 +272,7 @@
   .modal .form-group textarea { resize: vertical; min-height: 70px; }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
 
-  /* ── Access Log ── */
+  /* -- Log table -- */
   .log-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .log-table th {
     text-align: left;
@@ -305,7 +298,22 @@
   .log-ip { color: var(--text-muted); font-family: 'SF Mono', Consolas, monospace; font-size: 12px; }
   .log-domain { color: var(--accent); font-size: 12px; }
 
-  /* ── Empty state ── */
+  /* -- Codes table -- */
+  .codes-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 16px; }
+  .codes-table th {
+    text-align: left; padding: 6px 10px; font-size: 11px; font-weight: 600;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .codes-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .codes-table tr:last-child td { border-bottom: none; }
+  .code-mono { font-family: 'SF Mono', Consolas, monospace; font-size: 12px; cursor: pointer; color: var(--accent); }
+  .code-mono:hover { text-decoration: underline; }
+  .badge-active { background: var(--green-dim); color: var(--green); }
+  .badge-exhausted { background: var(--yellow-dim); color: var(--yellow); }
+  .badge-expired { background: var(--red-dim); color: var(--red); }
+
+  /* -- Empty state -- */
   .empty-state {
     text-align: center;
     padding: 48px 20px;
@@ -315,22 +323,7 @@
   .empty-state p { margin-bottom: 8px; font-size: 14px; }
   .empty-state .hint { font-size: 12px; }
 
-  /* ── Env warning ── */
-  .env-warning {
-    background: var(--yellow-dim);
-    border: 1px solid rgba(210,153,34,0.3);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 20px;
-    font-size: 13px;
-    color: var(--yellow);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .env-warning code { background: rgba(0,0,0,0.3); padding: 1px 6px; border-radius: 3px; font-size: 12px; }
-
-  /* ── Health detail ── */
+  /* -- Health detail -- */
   .health-reason {
     font-size: 11px;
     color: var(--red);
@@ -360,7 +353,12 @@
   }
   .health-tooltip:hover .health-tip-content { display: block; }
 
-  /* ── Responsive ── */
+  /* -- Checkbox row -- */
+  .check-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .check-row input[type="checkbox"] { accent-color: var(--accent); }
+  .check-row label { font-size: 13px; color: var(--text-muted); cursor: pointer; }
+
+  /* -- Responsive -- */
   @media (max-width: 700px) {
     .stats { grid-template-columns: 1fr; }
     .project-item { grid-template-columns: 1fr; gap: 8px; }
@@ -390,11 +388,6 @@
     </div>
   </header>
 
-  <div id="env-warning" class="env-warning" style="display:none;">
-    <span>&#9888;</span>
-    <span>Cloudflare API credentials not configured. Set <code>CLOUDFLARE_API_TOKEN</code> and <code>CLOUDFLARE_ACCOUNT_ID</code> in <code>~/.cloudflared/.env</code></span>
-  </div>
-
   <!-- Stats -->
   <div class="stats">
     <div class="stat-card">
@@ -403,9 +396,9 @@
       <div class="sub">active tunnels</div>
     </div>
     <div class="stat-card">
-      <div class="label">Locked</div>
-      <div class="value" id="stat-locked">0</div>
-      <div class="sub">email-gated</div>
+      <div class="label">Codes</div>
+      <div class="value" id="stat-codes">0</div>
+      <div class="sub">access codes</div>
     </div>
     <div class="stat-card">
       <div class="label">CF Tunnel</div>
@@ -423,7 +416,6 @@
   <div class="tabs">
     <div class="tab active" data-tab="projects">Projects<span class="tab-count" id="tab-count-projects">0</span></div>
     <div class="tab" data-tab="add">Add Project</div>
-    <div class="tab" data-tab="logs">Access Log<span class="tab-count" id="tab-count-logs">—</span></div>
     <div class="tab" data-tab="opslog">Operations Log</div>
   </div>
 
@@ -463,16 +455,10 @@
           </div>
           <div class="form-group" style="width:150px;">
             <label>Access</label>
-            <select id="f-access" onchange="toggleEmails()">
+            <select id="f-access">
               <option value="public">Public</option>
               <option value="locked">Locked</option>
             </select>
-          </div>
-        </div>
-        <div class="form-row hidden" id="emails-row">
-          <div class="form-group" style="flex:1;">
-            <label>Allowed Emails (comma-separated)</label>
-            <input type="text" id="f-emails" placeholder="client@company.com, friend@gmail.com">
           </div>
         </div>
         <div class="form-row">
@@ -495,23 +481,6 @@
           URL will be: <strong id="preview-url" style="color:var(--accent);"></strong>
         </div>
       </form>
-    </div>
-  </div>
-
-  <!-- Logs Panel -->
-  <div class="tab-panel" id="panel-logs">
-    <div class="card">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-        <h2 style="margin-bottom:0;">Access Events</h2>
-        <button class="btn btn-sm" onclick="loadLogs()">Refresh</button>
-      </div>
-      <div id="log-list">
-        <div class="empty-state">
-          <div class="icon">&#128274;</div>
-          <p>No access events yet</p>
-          <p class="hint">Events appear when someone visits a locked project</p>
-        </div>
-      </div>
     </div>
   </div>
 
@@ -539,18 +508,35 @@
 
 </div>
 
-<!-- Edit Emails Modal -->
-<div class="modal-overlay" id="email-modal">
-  <div class="modal">
-    <h3>Edit Allowed Emails</h3>
-    <div class="modal-sub">Project: <strong id="modal-project-name" style="color:var(--accent);"></strong></div>
-    <div class="form-group">
-      <label>Emails (one per line or comma-separated)</label>
-      <textarea id="modal-emails" placeholder="client@company.com&#10;friend@gmail.com"></textarea>
+<!-- Codes Modal -->
+<div class="modal-overlay" id="codes-modal">
+  <div class="modal wide">
+    <h3>Access Codes</h3>
+    <div class="modal-sub">Project: <strong id="codes-modal-name" style="color:var(--accent);"></strong></div>
+    <div id="codes-list"></div>
+    <hr style="border:none; border-top:1px solid var(--border); margin:16px 0;">
+    <h3 style="font-size:14px; margin-bottom:12px;">Create Code</h3>
+    <div class="form-row">
+      <div class="form-group" style="flex:1;">
+        <label>Email</label>
+        <input type="email" id="code-email" placeholder="user@example.com">
+      </div>
+      <div class="form-group" style="width:100px;">
+        <label>Max Uses</label>
+        <input type="number" id="code-max" placeholder="0" min="0" value="0">
+      </div>
+      <div class="form-group" style="width:200px;">
+        <label>Expire</label>
+        <input type="datetime-local" id="code-expire">
+      </div>
+    </div>
+    <div class="check-row">
+      <input type="checkbox" id="code-no-email" onchange="document.getElementById('code-email').disabled = this.checked;">
+      <label for="code-no-email">Anonymous (no email required)</label>
     </div>
     <div class="modal-actions">
-      <button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveEmails()">Save</button>
+      <button class="btn" onclick="closeCodesModal()">Close</button>
+      <button class="btn btn-primary" onclick="addCode()">Create Code</button>
     </div>
   </div>
 </div>
@@ -590,18 +576,44 @@ function toast(msg, type = 'success') {
   setTimeout(() => el.classList.remove('show'), 3500);
 }
 
+let _csrfToken = null;
+async function getCsrfToken() {
+  if (!_csrfToken) {
+    const res = await fetch('/api/csrf-token');
+    const data = await res.json();
+    _csrfToken = data.token;
+  }
+  return _csrfToken;
+}
+
 async function api(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (opts.method && opts.method !== 'GET') {
+    headers['X-CSRF-Token'] = await getCsrfToken();
+  }
   const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
+  if (res.status === 403) {
+    _csrfToken = null;
+    headers['X-CSRF-Token'] = await getCsrfToken();
+    const retry = await fetch(path, {
+      headers,
+      ...opts,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+    const data = await retry.json();
+    if (!retry.ok) throw new Error(data.error || 'Request failed');
+    return data;
+  }
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Request failed');
   return data;
 }
 
-// ── Tabs ──
+// -- Tabs --
 
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -609,12 +621,11 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
-    if (tab.dataset.tab === 'logs') loadLogs();
     if (tab.dataset.tab === 'opslog') loadOpsLog();
   });
 });
 
-// ── Status ──
+// -- Status --
 
 let tsAvailable = false;
 let tsHostname = '';
@@ -638,7 +649,7 @@ async function loadStatus() {
     }
     document.getElementById('stat-tunnel-sub').textContent = s.tunnel_id ? s.tunnel_id.slice(0,8) + '...' : '';
     document.getElementById('stat-projects').textContent = s.project_count || 0;
-    document.getElementById('stat-locked').textContent = s.locked_count || 0;
+    document.getElementById('stat-codes').textContent = s.code_count || 0;
     document.getElementById('tab-count-projects').textContent = s.project_count || 0;
 
     // Tailscale status
@@ -669,18 +680,12 @@ async function loadStatus() {
 
     unhealthyProjects = s.unhealthy_projects || [];
     healthDetail = s.health_detail || {};
-
-    if (!s.has_api_token || !s.has_account_id) {
-      document.getElementById('env-warning').style.display = 'flex';
-    } else {
-      document.getElementById('env-warning').style.display = 'none';
-    }
   } catch(e) {
     console.error('Status error:', e);
   }
 }
 
-// ── Projects ──
+// -- Projects --
 
 async function loadProjects() {
   try {
@@ -735,6 +740,8 @@ async function loadProjects() {
         healthBadge = ' <span style="color:var(--red); font-size:12px;" title="Health check failing">&#9888;</span>';
       }
 
+      const codesBtn = `<button class="btn btn-sm" onclick="openCodesModal('${p.name}')">Codes (${p.code_count || 0})</button>`;
+
       return `
       <div class="project-item">
         <div>
@@ -751,7 +758,7 @@ async function loadProjects() {
         ${accessBadge}
         <div class="actions">
           <button class="btn btn-sm" onclick="openEditModal('${p.name}', ${p.port}, \`${(p.dir||'').replace(/`/g,'')}\`, \`${(p.cmd||'').replace(/`/g,'')}\`)">Edit</button>
-          ${p.access === 'locked' ? `<button class="btn btn-sm" onclick="openEmailModal('${p.name}', \`${(p.emails||'').replace(/`/g,'')}\`)">Emails</button>` : ''}
+          ${codesBtn}
           <button class="btn btn-sm btn-danger" onclick="removeProject('${p.name}')">Remove</button>
         </div>
       </div>`;
@@ -761,7 +768,7 @@ async function loadProjects() {
   }
 }
 
-// ── Add project ──
+// -- Add project --
 
 document.getElementById('f-name').addEventListener('input', updatePreview);
 
@@ -771,17 +778,15 @@ async function addProject(e) {
   const port = document.getElementById('f-port').value;
   const provider = document.getElementById('f-provider').value;
   const access = document.getElementById('f-access').value;
-  const emails = document.getElementById('f-emails').value.trim();
   const dir = document.getElementById('f-dir').value.trim();
   const cmd = document.getElementById('f-cmd').value.trim();
 
   const body = { name, port, provider, dir, cmd };
   if (provider === 'tailscale') {
-    body.ts_mode = access; // 'serve' or 'funnel'
+    body.ts_mode = access;
     body.access = access;
   } else {
     body.access = access;
-    body.emails = emails;
   }
 
   const btn = e.target.querySelector('button[type=submit]');
@@ -795,12 +800,10 @@ async function addProject(e) {
     });
     toast(`Added ${name}` + (result.url ? ` — ${result.url}` : ''));
     document.getElementById('add-form').reset();
-    document.getElementById('emails-row').classList.add('hidden');
     document.getElementById('add-preview').classList.add('hidden');
     toggleProvider();
     loadProjects();
     loadStatus();
-    // Switch to projects tab
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     document.querySelector('[data-tab="projects"]').classList.add('active');
@@ -816,22 +819,13 @@ async function addProject(e) {
 function toggleProvider() {
   const provider = document.getElementById('f-provider').value;
   const accessSel = document.getElementById('f-access');
-  const emailsRow = document.getElementById('emails-row');
 
   if (provider === 'tailscale') {
     accessSel.innerHTML = '<option value="serve">Serve (tailnet)</option><option value="funnel">Funnel (public)</option>';
-    emailsRow.classList.add('hidden');
   } else {
     accessSel.innerHTML = '<option value="public">Public</option><option value="locked">Locked</option>';
   }
-  toggleEmails();
   updatePreview();
-}
-
-function toggleEmails() {
-  const access = document.getElementById('f-access').value;
-  const row = document.getElementById('emails-row');
-  if (access === 'locked') { row.classList.remove('hidden'); } else { row.classList.add('hidden'); }
 }
 
 function updatePreview() {
@@ -851,10 +845,10 @@ function updatePreview() {
   }
 }
 
-// ── Remove project ──
+// -- Remove project --
 
 async function removeProject(name) {
-  if (!confirm(`Remove "${name}"? This deletes the Access app if one exists.`)) return;
+  if (!confirm(`Remove "${name}"? This will delete all access codes and the app service.`)) return;
   try {
     await api(`/api/projects/${name}`, { method: 'DELETE' });
     toast(`Removed ${name}`);
@@ -865,40 +859,108 @@ async function removeProject(name) {
   }
 }
 
-// ── Edit emails modal ──
+// -- Codes modal --
 
-let currentEditProject = '';
+let currentCodesProject = '';
 
-function openEmailModal(name, emails) {
-  currentEditProject = name;
-  document.getElementById('modal-project-name').textContent = name + '.{{ domain }}';
-  document.getElementById('modal-emails').value = emails.replace(/,\s*/g, '\n');
-  document.getElementById('email-modal').classList.add('open');
-  document.getElementById('modal-emails').focus();
+function openCodesModal(name) {
+  currentCodesProject = name;
+  document.getElementById('codes-modal-name').textContent = name;
+  document.getElementById('code-email').value = '';
+  document.getElementById('code-email').disabled = false;
+  document.getElementById('code-max').value = '0';
+  document.getElementById('code-expire').value = '';
+  document.getElementById('code-no-email').checked = false;
+  document.getElementById('codes-modal').classList.add('open');
+  loadCodes();
 }
 
-function closeModal() {
-  document.getElementById('email-modal').classList.remove('open');
-  currentEditProject = '';
+function closeCodesModal() {
+  document.getElementById('codes-modal').classList.remove('open');
+  currentCodesProject = '';
 }
 
-async function saveEmails() {
-  const raw = document.getElementById('modal-emails').value.trim();
-  const emails = raw.split(/[\n,]+/).map(e => e.trim()).filter(Boolean).join(', ');
+async function loadCodes() {
+  const container = document.getElementById('codes-list');
   try {
-    await api(`/api/projects/${currentEditProject}/emails`, {
-      method: 'PUT',
-      body: { emails },
+    const codes = await api(`/api/projects/${currentCodesProject}/codes`);
+    if (codes.length === 0) {
+      container.innerHTML = '<div style="text-align:center; padding:20px; color:var(--text-muted); font-size:13px;">No codes yet. Create one below.</div>';
+      return;
+    }
+    let html = `<table class="codes-table">
+      <thead><tr><th>Code</th><th>Email</th><th>Uses</th><th>Expire</th><th>Status</th><th></th></tr></thead><tbody>`;
+    for (const c of codes) {
+      const truncCode = c.code.slice(0, 12) + '...';
+      const email = c.email || '<span style="color:var(--yellow);">anonymous</span>';
+      const maxStr = c.max_uses != null && c.max_uses > 0 ? `${c.uses}/${c.max_uses}` : `${c.uses}`;
+      const expire = c.expires_at || '—';
+      const statusClass = `badge badge-${c.status}`;
+      html += `<tr>
+        <td><span class="code-mono" onclick="navigator.clipboard.writeText('${c.code}'); toast('Copied!')" title="Click to copy full code">${truncCode}</span></td>
+        <td>${email}</td>
+        <td>${maxStr}</td>
+        <td class="log-time">${expire}</td>
+        <td><span class="${statusClass}">${c.status}</span></td>
+        <td><button class="btn btn-sm btn-danger" onclick="deleteCode('${c.code}')">Delete</button></td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = `<div style="color:var(--red); padding:12px;">${e.message}</div>`;
+  }
+}
+
+async function addCode() {
+  const noEmail = document.getElementById('code-no-email').checked;
+  const email = document.getElementById('code-email').value.trim();
+  const maxUses = parseInt(document.getElementById('code-max').value) || null;
+  const expireInput = document.getElementById('code-expire').value;
+
+  let expiresAt = '';
+  if (expireInput) {
+    expiresAt = new Date(expireInput).toISOString();
+  }
+
+  if (!noEmail && !email) {
+    toast('Email is required (or check Anonymous)', 'error');
+    return;
+  }
+
+  try {
+    const result = await api(`/api/projects/${currentCodesProject}/codes`, {
+      method: 'POST',
+      body: { email: noEmail ? '' : email, no_email: noEmail, max_uses: maxUses, expires_at: expiresAt },
     });
-    toast(`Updated emails for ${currentEditProject}`);
-    closeModal();
+    toast(`Code created: ${result.code.slice(0, 12)}...`);
+    document.getElementById('code-email').value = '';
+    document.getElementById('code-max').value = '0';
+    document.getElementById('code-expire').value = '';
+    document.getElementById('code-no-email').checked = false;
+    document.getElementById('code-email').disabled = false;
+    loadCodes();
     loadProjects();
+    loadStatus();
   } catch(e) {
     toast(e.message, 'error');
   }
 }
 
-// ── Service control ──
+async function deleteCode(code) {
+  if (!confirm('Delete this code?')) return;
+  try {
+    await api(`/api/projects/${currentCodesProject}/codes/${code}`, { method: 'DELETE' });
+    toast('Code deleted');
+    loadCodes();
+    loadProjects();
+    loadStatus();
+  } catch(e) {
+    toast(e.message, 'error');
+  }
+}
+
+// -- Service control --
 
 async function svcAction(name, action) {
   const verb = action === 'start' ? 'Starting' : action === 'stop' ? 'Stopping' : 'Restarting';
@@ -922,54 +984,7 @@ async function svcAction(name, action) {
   }
 }
 
-// ── Access Logs ──
-
-async function loadLogs() {
-  const container = document.getElementById('log-list');
-  try {
-    const logs = await api('/api/logs?limit=50');
-    document.getElementById('tab-count-logs').textContent = logs.length;
-
-    if (logs.length === 0) {
-      container.innerHTML = '<div class="empty-state"><div class="icon">&#128274;</div><p>No access events yet</p><p class="hint">Events appear when someone visits a locked project</p></div>';
-      return;
-    }
-
-    let html = `<table class="log-table">
-      <thead><tr>
-        <th>Status</th>
-        <th>Email</th>
-        <th>Project</th>
-        <th>Action</th>
-        <th>IP</th>
-        <th>Time</th>
-      </tr></thead><tbody>`;
-
-    for (const log of logs) {
-      const allowed = log.allowed;
-      const time = log.created_at ? new Date(log.created_at).toLocaleString() : '—';
-      const statusClass = allowed ? 'log-allowed' : 'log-denied';
-      const statusText = allowed ? 'Allowed' : 'Denied';
-      const project = log.project || log.domain || '—';
-
-      html += `<tr>
-        <td><span class="${statusClass}">${statusText}</span></td>
-        <td class="log-email">${log.email || '—'}</td>
-        <td class="log-domain">${project}</td>
-        <td>${log.action || '—'}</td>
-        <td class="log-ip">${log.ip || '—'}</td>
-        <td class="log-time">${time}</td>
-      </tr>`;
-    }
-
-    html += '</tbody></table>';
-    container.innerHTML = html;
-  } catch(e) {
-    container.innerHTML = `<div class="empty-state"><p style="color:var(--red);">${e.message}</p></div>`;
-  }
-}
-
-// ── Restart tunnel ──
+// -- Restart tunnel --
 
 async function restartTunnel() {
   try {
@@ -981,7 +996,7 @@ async function restartTunnel() {
   }
 }
 
-// ── Edit project modal ──
+// -- Edit project modal --
 
 let currentEditProjectName = '';
 
@@ -1024,7 +1039,7 @@ async function saveProjectEdit() {
   }
 }
 
-// ── Operations log ──
+// -- Operations log --
 
 async function loadOpsLog() {
   const container = document.getElementById('opslog-list');
@@ -1040,7 +1055,6 @@ async function loadOpsLog() {
       return;
     }
 
-    // Populate filter dropdown with unique project names
     const filterEl = document.getElementById('opslog-filter');
     const currentVal = filterEl.value;
     const projects = [...new Set(logs.map(l => l.project).filter(Boolean))];
@@ -1059,7 +1073,6 @@ async function loadOpsLog() {
 
     for (const log of logs) {
       const time = log.ts ? new Date(log.ts).toLocaleString() : '—';
-      const levelClass = log.level === 'error' ? 'log-denied' : log.level === 'warn' ? 'style="color:var(--yellow);"' : 'log-allowed';
       const levelAttr = log.level === 'warn' ? 'style="color:var(--yellow); font-weight:600;"' : '';
 
       html += `<tr>
@@ -1079,12 +1092,12 @@ async function loadOpsLog() {
   }
 }
 
-// ── Keyboard ──
+// -- Keyboard --
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { closeModal(); closeEditModal(); }
+  if (e.key === 'Escape') { closeCodesModal(); closeEditModal(); }
 });
 
-// ── Init ──
+// -- Init --
 loadStatus();
 loadProjects();
 setInterval(loadStatus, 30000);
